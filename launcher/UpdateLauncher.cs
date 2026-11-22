@@ -752,6 +752,33 @@ internal static class UpdateLauncher
         }
     }
     /// <summary>先 git pull（此时旧 update.exe 已退出，可写），再热替换并重启。</summary>
+    /// <summary>优先用内置 MinGit 的绝对路径（从 git-status.txt 读取），否则用 PATH 里的 git。</summary>
+    private static string ResolveGitExecutable()
+    {
+        try
+        {
+            string statusFile = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SweetPotatoClient-Updater", "git-status.txt");
+            if (File.Exists(statusFile))
+            {
+                string line = File.ReadAllText(statusFile).Trim();
+                if (line.StartsWith("bundled|"))
+                {
+                    string path = line.Substring("bundled|".Length).Trim();
+                    if (File.Exists(path))
+                    {
+                        return path;
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // 忽略
+        }
+        return "git";
+    }
     private static int ApplyUpdateWithPull(string sourcePath, string targetPath, string launcherPidText, string repoDir)
     {
         int pid;
@@ -765,7 +792,7 @@ internal static class UpdateLauncher
         try
         {
             Console.WriteLine("正在执行 git pull ...");
-            ProcessStartInfo git = new ProcessStartInfo("git");
+            ProcessStartInfo git = new ProcessStartInfo(ResolveGitExecutable());
             git.Arguments = "-c pull.rebase=false pull --no-rebase --no-edit";
             git.WorkingDirectory = repoDir;
             git.UseShellExecute = false;

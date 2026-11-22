@@ -152,7 +152,7 @@ public final class Launcher {
         waitForPid(pidText);
         try {
             System.out.println("正在执行 git pull ...");
-            ProcessBuilder git = new ProcessBuilder("git", "-c", "pull.rebase=false", "pull", "--no-rebase", "--no-edit");
+            ProcessBuilder git = new ProcessBuilder(Git.executable(), "-c", "pull.rebase=false", "pull", "--no-rebase", "--no-edit");
             git.directory(Path.of(repoDir).toFile());
             git.inheritIO();
             git.environment().put("GIT_TERMINAL_PROMPT", "0");

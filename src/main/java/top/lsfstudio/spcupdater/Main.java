@@ -246,7 +246,7 @@ public final class Main {
         }
         Ui.println("  正在克隆客户端到：" + Ui.gray(dir.toString()));
         try {
-            Process process = new ProcessBuilder("git", "clone",
+            Process process = new ProcessBuilder(Git.executable(), "clone",
                     "https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient.git",
                     dir.toString())
                     .inheritIO()
@@ -264,26 +264,46 @@ public final class Main {
     }
 
     private static String pickFolder() {
+        String preset = System.getenv("SPC_INSTALL_DIR");
+        if (preset != null && !preset.isBlank()) {
+            return preset;
+        }
         String script = String.join("\n",
                 "Add-Type -AssemblyName System.Windows.Forms",
                 "$f = New-Object System.Windows.Forms.FolderBrowserDialog",
                 "$f.Description = '选择 SweetPotatoClient 安装位置'",
-                "if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath }");
+                "if ($f.ShowDialog() -eq 'OK') {",
+                "  [IO.File]::WriteAllText($args[0], $f.SelectedPath, (New-Object Text.UTF8Encoding $false))",
+                "}");
+        Path scriptFile = null;
+        Path resultFile = null;
         try {
-            Path scriptFile = Path.of(System.getProperty("java.io.tmpdir"),
-                    "spc-pick-folder-" + ProcessHandle.current().pid() + ".ps1");
-            Files.writeString(scriptFile, script);
+            Path dir = Path.of(System.getProperty("java.io.tmpdir"));
+            scriptFile = dir.resolve("spc-pick-folder-" + ProcessHandle.current().pid() + ".ps1");
+            resultFile = dir.resolve("spc-pick-folder-" + ProcessHandle.current().pid() + ".txt");
+            Files.deleteIfExists(resultFile);
+            // PowerShell 5.1 读无 BOM 的 .ps1 会按 ANSI 解析，中文会乱码，这里带 BOM 写入
+            Files.write(scriptFile, ("\uFEFF" + script).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             ProcessBuilder builder = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
-                    "-STA", "-ExecutionPolicy", "Bypass", "-File", scriptFile.toString());
+                    "-STA", "-ExecutionPolicy", "Bypass", "-File", scriptFile.toString(), resultFile.toString());
             builder.redirectErrorStream(true);
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             Process process = builder.start();
-            String output = new String(process.getInputStream().readAllBytes(),
-                    java.nio.charset.StandardCharsets.UTF_8).trim();
-            process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
-            Files.deleteIfExists(scriptFile);
+            process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+            if (!Files.isRegularFile(resultFile)) {
+                return null;
+            }
+            String output = Files.readString(resultFile, java.nio.charset.StandardCharsets.UTF_8).trim();
             return output.isEmpty() ? null : output;
         } catch (Exception e) {
             return null;
+        } finally {
+            try {
+                Files.deleteIfExists(scriptFile);
+                Files.deleteIfExists(resultFile);
+            } catch (Exception ignored) {
+                // 忽略清理失败
+            }
         }
     }
 
