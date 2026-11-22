@@ -11,12 +11,24 @@ SweetPotatoClient 整合包的更新器 / 配置锁工具（Java 控制台 TUI�
 | 菜单 | 说明 |
 |---|---|
 | `[1] 更新 SweetPotatoClient` | `git fetch` 后展示上游提交与文件变更，确认后解锁配置 → `git pull`（失败时按冲突文件清理后重试）→ 回锁配置 |
-| `[2] 更新 SweetPotatoClient-Updater` | **占位**：等待首个 Release 发布后再实现（版本格式/下载地址待定） |
+| `[2] 更新 SweetPotatoClient-Updater` | 查询最新 Release → 版本核对 → 下载 `update-<tag>.exe` → SHA-256 校验 → 热替换并重启 |
 | `[3] +W 解锁配置文件` | 去掉 `PCL/config.v1.yml` 的只读，供 PCL 修改设置 |
 | `[4] -W 回锁配置文件` | 把 Java 路径改回内置 JDK 相对路径，并恢复只读 |
 | `[5] 退出` | 退出 |
 
-主菜单会显示：更新器版本、云端版本（待接入 Release）、两个仓库地址、客户端本地/上游提交、配置锁状态。
+主菜单会显示：更新器版本、云端版本（后台查询最新 Release）、两个仓库地址、客户端本地/上游提交、配置锁状态；
+有新版本时会在菜单里提示，并在 `[2]` 后面标出新版本号。
+
+## 更新器自更新（[2]）
+
+1. 请求 `GET /api/v1/repos/LiSFeDCo/SweetPotatoClient-Updater/releases/latest`；
+2. 读 `tag_name`（如 `v0.0.3-00038`）与本地版本比较；
+3. 在附件里找 `update-<tag>.exe`，并找同名 `.sha256`；
+4. 下载到 `update.exe.new`，用 `.sha256` 校验（**没有校验文件会拒绝更新**）；
+5. 热替换：把当前 `update.exe` 复制成临时「替换助手」→ 当前进程退出 → 助手覆盖 `update.exe` 并重启新版本。
+
+> Release 发布要求：附件名必须是 `update-vX.Y.Z-NNNNN.exe`，并同时上传 `update-vX.Y.Z-NNNNN.exe.sha256`
+> （内容为 `<hash>  <文件名>`，GNU sha256sum 格式）。
 
 ## 构建
 

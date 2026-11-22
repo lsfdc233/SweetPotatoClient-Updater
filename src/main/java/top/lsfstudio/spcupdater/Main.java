@@ -1,9 +1,10 @@
 package top.lsfstudio.spcupdater;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 
@@ -11,9 +12,13 @@ import java.util.Locale;
 public final class Main {
     private static final int MAX_STAT_LINES = 20;
     private static final int MAX_CHANGES_SHOWN = 15;
+    private static final int MAX_RELEASE_BODY_LINES = 12;
 
     private final Path client;
     private final PclConfig pcl;
+
+    private volatile ReleaseClient.Release latestRelease;
+    private volatile String latestReleaseError = "";
 
     private Main(Path client) {
         this.client = client;
@@ -61,34 +66,70 @@ public final class Main {
 
     /** 优先找 remote 指向 SweetPotatoClient（不是 Updater）的仓库。 */
     private static Path resolveClient(Path explicit) {
-        LinkedHashSet<Path> seeds = new LinkedHashSet<>();
+        List<Path> primary = new ArrayList<>();
         if (explicit != null) {
-            seeds.add(explicit.toAbsolutePath().normalize());
+            primary.add(explicit.toAbsolutePath().normalize());
         }
-        seeds.add(Path.of("").toAbsolutePath().normalize());
-        Path exeDir = exeDir();
-        if (exeDir != null) {
-            seeds.add(exeDir);
-            if (exeDir.getParent() != null) {
-                seeds.add(exeDir.getParent());
+        primary.add(Path.of("").toAbsolutePath().normalize());
+        Path envDir = envExeDir();
+        if (envDir != null) {
+            primary.add(envDir);
+            if (envDir.getParent() != null) {
+                primary.add(envDir.getParent());
             }
         }
-        for (Path seed : seeds) {
+        List<Path> secondary = new ArrayList<>();
+        Path exeDir = exeDir();
+        if (exeDir != null) {
+            secondary.add(exeDir);
+            if (exeDir.getParent() != null) {
+                secondary.add(exeDir.getParent());
+            }
+        }
+        for (Path seed : primary) {
             Path candidate = walkUpForClientRepo(seed);
             if (candidate != null) {
                 return candidate;
             }
         }
-        for (Path seed : seeds) {
-            Path current = seed;
-            while (current != null) {
-                if (Files.isDirectory(current.resolve(".git"))) {
-                    return current;
-                }
-                current = current.getParent();
+        for (Path seed : primary) {
+            Path candidate = walkUpForAnyRepo(seed);
+            if (candidate != null) {
+                return candidate;
             }
         }
-        return seeds.iterator().next();
+        for (Path seed : secondary) {
+            Path candidate = walkUpForClientRepo(seed);
+            if (candidate != null) {
+                return candidate;
+            }
+        }
+        for (Path seed : secondary) {
+            Path candidate = walkUpForAnyRepo(seed);
+            if (candidate != null) {
+                return candidate;
+            }
+        }
+        return primary.get(0);
+    }
+
+    private static Path walkUpForAnyRepo(Path start) {
+        Path current = start;
+        while (current != null) {
+            if (Files.isDirectory(current.resolve(".git"))) {
+                return current;
+            }
+            current = current.getParent();
+        }
+        return null;
+    }
+
+    private static Path envExeDir() {
+        String value = System.getenv("SPC_UPDATER_EXE");
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return Path.of(value).toAbsolutePath().normalize().getParent();
     }
 
     private static Path walkUpForClientRepo(Path start) {
@@ -137,6 +178,7 @@ public final class Main {
             Ui.pause("按 Enter 退出...");
             return;
         }
+        startCloudCheck();
         while (true) {
             drawMenu();
             String choice = Ui.readLine("请选择 [1-5]");
@@ -145,7 +187,11 @@ public final class Main {
             }
             switch (choice.trim()) {
                 case "1" -> updateClient();
-                case "2" -> updateUpdater();
+                case "2" -> {
+                    if (updateUpdater()) {
+                        return;
+                    }
+                }
                 case "3" -> unlockConfig();
                 case "4" -> relockConfig();
                 case "5" -> {
@@ -158,15 +204,49 @@ public final class Main {
         }
     }
 
+    /** 后台查询最新 Release，避免阻塞菜单。 */
+    private void startCloudCheck() {
+        Thread thread = new Thread(() -> {
+            try {
+                latestRelease = ReleaseClient.fetchLatest(Duration.ofSeconds(8));
+                latestReleaseError = "";
+            } catch (Exception e) {
+                latestReleaseError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            }
+        }, "spc-cloud-check");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private String cloudVersionText() {
+        ReleaseClient.Release release = latestRelease;
+        if (release != null) {
+            return release.tag();
+        }
+        if (!latestReleaseError.isEmpty()) {
+            return "未知（" + latestReleaseError + "）";
+        }
+        return "查询中...";
+    }
+
+    private boolean hasNewerUpdater() {
+        ReleaseClient.Release release = latestRelease;
+        return release != null && VersionUtil.isNewer(release.tag(), UpdaterInfo.VERSION);
+    }
+
     private void drawMenu() {
         Ui.clear();
         Ui.banner();
         Ui.println(Ui.gray("  made by " + UpdaterInfo.AUTHOR));
         Ui.println();
+        boolean newer = hasNewerUpdater();
         Ui.println("  更新器版本：" + Ui.cyan(UpdaterInfo.VERSION));
-        Ui.println("  云端版本：" + Ui.gray(UpdaterInfo.cloudVersion()));
+        Ui.println("  云端版本：" + (newer ? Ui.yellow(cloudVersionText() + "（有新版本）") : Ui.gray(cloudVersionText())));
         Ui.println("  更新器仓库：" + Ui.gray(UpdaterInfo.UPDATER_REPO));
         Ui.println("  客户端仓库：" + Ui.gray(UpdaterInfo.CLIENT_REPO));
+        if (newer) {
+            Ui.println("  " + Ui.yellow("提示：发现更新器新版本 " + latestRelease.tag() + "，按 [2] 更新"));
+        }
         Ui.println();
         Ui.println("  客户端：" + Ui.gray(client.toString()));
         String upstream = Git.upstream(client);
@@ -189,7 +269,8 @@ public final class Main {
         }
         Ui.println();
         Ui.println("  " + Ui.cyan("[1]") + " 更新 SweetPotatoClient");
-        Ui.println("  " + Ui.cyan("[2]") + " 更新 SweetPotatoClient-Updater");
+        Ui.println("  " + Ui.cyan("[2]") + " 更新 SweetPotatoClient-Updater"
+                + (newer ? Ui.yellow("  ← 新版本 " + latestRelease.tag()) : ""));
         Ui.println("  " + Ui.cyan("[3]") + " +W 解锁配置文件（PCL 修改设置前）");
         Ui.println("  " + Ui.cyan("[4]") + " -W 回锁配置文件（内置 JDK 路径 + 只读）");
         Ui.println("  " + Ui.cyan("[5]") + " 退出");
@@ -296,19 +377,182 @@ public final class Main {
         }
     }
 
-    // ------------------------------------------------------------ 2 更新更新器（占位）
+    // ------------------------------------------------------------ 2 更新更新器
 
-    private void updateUpdater() {
+    /** @return true 表示已启动热替换，需要退出当前进程 */
+    private boolean updateUpdater() {
         Ui.clear();
         Ui.title("更新 SweetPotatoClient-Updater");
-        Ui.println("  该功能等待更新器发布首个 Release 后再实现（下载地址与版本格式待确认）。");
+        Ui.println("  当前版本：" + Ui.cyan(UpdaterInfo.VERSION));
+        Ui.println("  正在查询最新 Release...");
+        ReleaseClient.Release release;
+        try {
+            release = ReleaseClient.fetchLatest(Duration.ofSeconds(12));
+            latestRelease = release;
+            latestReleaseError = "";
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("查询最新 Release 失败：" + e.getMessage()));
+            Ui.println("  " + Ui.gray(UpdaterInfo.UPDATER_REPO + "/releases"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        Ui.println("  最新版本：" + Ui.cyan(release.tag()));
+        if (!VersionUtil.isNewer(release.tag(), UpdaterInfo.VERSION)) {
+            Ui.println("  " + Ui.green("已经是最新版本，无需更新。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+
+        String expectedName = "update-" + release.tag() + ".exe";
+        ReleaseClient.Asset exeAsset = release.asset(expectedName).orElse(null);
+        if (exeAsset == null) {
+            exeAsset = release.firstUpdateExe().orElse(null);
+        }
+        if (exeAsset == null) {
+            Ui.println("  " + Ui.red("该 Release 没有可用的 update-*.exe 附件。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        ReleaseClient.Asset shaAsset = release.asset(exeAsset.name() + ".sha256").orElse(null);
+
+        String body = release.body() == null ? "" : release.body().trim();
+        if (!body.isEmpty()) {
+            Ui.println();
+            Ui.println("  " + Ui.gray("Release 说明："));
+            String[] lines = body.split("\\R");
+            int shown = Math.min(lines.length, MAX_RELEASE_BODY_LINES);
+            for (int i = 0; i < shown; i++) {
+                Ui.println("    " + Ui.gray(lines[i]));
+            }
+            if (lines.length > shown) {
+                Ui.println("    " + Ui.gray("...（共 " + lines.length + " 行）"));
+            }
+        }
         Ui.println();
-        Ui.println("  当前更新器版本：" + Ui.cyan(UpdaterInfo.VERSION));
-        Ui.println("  云端版本：" + Ui.gray(UpdaterInfo.cloudVersion()));
-        Ui.println("  更新器仓库：" + Ui.gray(UpdaterInfo.UPDATER_REPO));
+        Ui.println("  下载附件：" + Ui.gray(exeAsset.name()));
+        if (shaAsset == null) {
+            Ui.println("  " + Ui.red("缺少 " + exeAsset.name() + ".sha256 校验文件，已取消更新。"));
+            Ui.println("  " + Ui.gray("请先给 Release 补传校验文件后再试。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        String exeEnv = System.getenv("SPC_UPDATER_EXE");
+        if (exeEnv == null || exeEnv.isBlank()) {
+            Ui.println("  " + Ui.red("自更新需要由 update.exe 启动（当前不是）。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        Path exe = Path.of(exeEnv).toAbsolutePath();
         Ui.println();
-        Ui.println("  " + Ui.gray("TODO：首个 Release 发布后补全：查询最新 Release → 校验版本 → 下载 → 替换 update.exe。"));
-        Ui.pause("按 Enter 返回主菜单...");
+        if (!Ui.confirm("确认更新？(y/n)")) {
+            Ui.println("  已取消。");
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+
+        Path temp = exe.resolveSibling(exe.getFileName().toString() + ".new");
+        String actualHash;
+        try {
+            Files.deleteIfExists(temp);
+            actualHash = ReleaseClient.download(exeAsset.url(), temp, (done, total) -> {
+                int percent = total > 0 ? (int) (done * 100 / total) : 0;
+                System.out.print("\r  下载中：" + percent + "%  (" + formatSize(done) + " / " + formatSize(total) + ")   ");
+                System.out.flush();
+            });
+            System.out.println();
+            String expectedHash = ReleaseClient.parseSha256(ReleaseClient.downloadText(shaAsset.url()));
+            if (expectedHash == null) {
+                throw new IOException("校验文件格式不正确");
+            }
+            if (!expectedHash.equalsIgnoreCase(actualHash)) {
+                throw new IOException("SHA-256 不匹配（期望 " + expectedHash + "，实际 " + actualHash + "）");
+            }
+            Ui.println("  " + Ui.green("SHA-256 校验通过：") + Ui.gray(actualHash));
+        } catch (Exception e) {
+            try {
+                Files.deleteIfExists(temp);
+            } catch (IOException ignored) {
+                // 忽略清理失败
+            }
+            Ui.println("  " + Ui.red("下载/校验失败：" + e.getMessage()));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+
+        Ui.println("  正在热替换并重启更新器...");
+        try {
+            Path helper = createApplyHelper(exe);
+            ProcessBuilder builder = new ProcessBuilder(
+                    helper.toString(),
+                    "--apply-update",
+                    temp.toString(),
+                    exe.toString(),
+                    String.valueOf(launcherPid()));
+            builder.directory(exe.getParent().toFile());
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            builder.start();
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("启动替换进程失败：" + e.getMessage()));
+            Ui.println("  新版本已下载到：" + Ui.gray(temp.toString()));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 复制当前 update.exe 到临时目录，作为“替换助手”运行。
+     * 助手不依赖新版本里是否有替换逻辑，也能覆盖正在运行的旧 exe。
+     */
+    private static Path createApplyHelper(Path exe) throws IOException {
+        Path dir = Path.of(System.getProperty("java.io.tmpdir"), "sweetpotato-updater");
+        Files.createDirectories(dir);
+        try (var stream = Files.list(dir)) {
+            stream.filter(p -> p.getFileName().toString().startsWith("apply-helper-"))
+                    .forEach(p -> {
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (IOException ignored) {
+                            // 旧助手可能仍被占用，忽略
+                        }
+                    });
+        }
+        Path helper = dir.resolve("apply-helper-" + ProcessHandle.current().pid() + ".exe");
+        Files.copy(exe, helper, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        return helper;
+    }
+
+    /** 当前 update.exe 的路径（由启动器通过 SPC_UPDATER_EXE 传入）。 */
+    private Path currentExePath() {
+        String fromEnv = System.getenv("SPC_UPDATER_EXE");
+        if (fromEnv != null && !fromEnv.isBlank()) {
+            return Path.of(fromEnv).toAbsolutePath();
+        }
+        Path candidate = client.resolve("update.exe");
+        return Files.isRegularFile(candidate) ? candidate.toAbsolutePath() : null;
+    }
+
+    /** 启动器进程 PID；直接用 java -jar 运行时为 0（不需要等待旧启动器）。 */
+    private static long launcherPid() {
+        String fromEnv = System.getenv("SPC_UPDATER_EXE");
+        if (fromEnv == null || fromEnv.isBlank()) {
+            return 0L;
+        }
+        return ProcessHandle.current().parent().map(ProcessHandle::pid).orElse(0L);
+    }
+
+    private static String formatSize(long bytes) {
+        if (bytes < 0) {
+            return "?";
+        }
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        if (bytes < 1024 * 1024) {
+            return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        }
+        return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0));
     }
 
     // ------------------------------------------------------------ 3 +W / 4 -W

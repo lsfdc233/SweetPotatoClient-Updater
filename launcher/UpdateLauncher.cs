@@ -9,6 +9,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 
 internal static class UpdateLauncher
 {
@@ -55,10 +56,17 @@ internal static class UpdateLauncher
 
     private static int Main(string[] args)
     {
+
         try
         {
+            if (args != null && args.Length >= 3
+                && string.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
+            {
+                return ApplyUpdate(args[1], args[2], args.Length >= 4 ? args[3] : null);
+            }
             string exePath = Process.GetCurrentProcess().MainModule.FileName;
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
+            CleanupStaleUpdate(exeDir);
             string client = FindClientRoot(exeDir);
             if (client == null)
             {
@@ -78,6 +86,7 @@ internal static class UpdateLauncher
             startInfo.Arguments = "-jar \"" + jar + "\"" + QuoteArgs(args);
             startInfo.WorkingDirectory = client;
             startInfo.UseShellExecute = false;
+            startInfo.EnvironmentVariables["SPC_UPDATER_EXE"] = exePath;
             if (ansi)
             {
                 startInfo.EnvironmentVariables["SPC_UPDATER_ANSI"] = "1";
@@ -207,6 +216,114 @@ internal static class UpdateLauncher
                 File.Move(temp, jar);
             }
             return jar;
+        }
+    }
+    private static int ApplyUpdate(string sourcePath, string targetPath, string launcherPidText)
+    {
+        string dir = Path.GetDirectoryName(targetPath);
+        int pid;
+        int.TryParse(launcherPidText, out pid);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+        while (pid > 0 && ProcessExists(pid) && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(200);
+        }
+        DateTime copyDeadline = DateTime.UtcNow.AddSeconds(30);
+        Exception last = null;
+        while (DateTime.UtcNow < copyDeadline)
+        {
+            try
+            {
+                File.Copy(sourcePath, targetPath, true);
+                last = null;
+                break;
+            }
+            catch (Exception e)
+            {
+                last = e;
+                Thread.Sleep(250);
+            }
+        }
+        if (last != null)
+        {
+            Log(dir, "替换失败：" + last.Message);
+            Console.Error.WriteLine("[SweetPotatoClient-Updater] 替换失败：" + last.Message);
+            Console.Error.WriteLine("新版本文件：" + sourcePath);
+            Console.Error.WriteLine("请手动把它复制为：" + targetPath);
+            return 4;
+        }
+        try
+        {
+            File.Delete(sourcePath);
+        }
+        catch (Exception)
+        {
+            // 删不掉也无妨
+        }
+        try
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo(targetPath);
+            if (Console.IsOutputRedirected)
+            {
+                // 自动化/重定向场景：继承当前 stdio，避免弹出新控制台
+                startInfo.UseShellExecute = false;
+                startInfo.WorkingDirectory = Path.GetDirectoryName(targetPath);
+            }
+            else
+            {
+                startInfo.UseShellExecute = true;
+            }
+            Process.Start(startInfo);
+        }
+        catch (Exception)
+        {
+            // 文件已替换，用户可手动启动
+        }
+        return 0;
+    }
+
+
+    private static void Log(string dir, string message)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(dir, "update-apply.log"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine);
+        }
+        catch (Exception)
+        {
+            // 忽略日志失败
+        }
+    }
+
+    private static bool ProcessExists(int pid)
+    {
+        try
+        {
+            using (Process process = Process.GetProcessById(pid))
+            {
+                return !process.HasExited;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void CleanupStaleUpdate(string exeDir)
+    {
+        try
+        {
+            string stale = Path.Combine(exeDir, "update.exe.new");
+            if (File.Exists(stale))
+            {
+                File.Delete(stale);
+            }
+        }
+        catch (Exception)
+        {
+            // 忽略：下次启动再清理
         }
     }
 }
