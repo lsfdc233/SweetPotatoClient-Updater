@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -151,23 +152,28 @@ internal static class UpdateLauncher
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
             CleanupStaleUpdate(exeDir);
             string client = FindClientRoot(exeDir);
-            if (client == null)
-            {
-                Fail("找不到 SweetPotatoClient 根目录（需要 SweetPotatoClient.json 或 PCL 目录）。");
-                return 2;
-            }
-            string java = FindJava(client);
+            string java = EnsureEmbeddedRuntime();
             if (java == null)
             {
-                Fail("在客户端目录中找不到内置 JDK（jdk-*/bin/java.exe）。");
+                if (client == null)
+                {
+                    Fail("找不到 SweetPotatoClient 根目录，且内置 Java 运行时解压失败。");
+                    return 2;
+                }
+                java = FindJava(client);
+            }
+            if (java == null)
+            {
+                Fail("找不到 Java 运行时（内置运行时解压失败，客户端目录也没有 jdk-*/bin/java.exe）。");
                 return 3;
             }
+            string workingDir = client != null ? client : exeDir;
             string jar = ExtractJar();
             bool ansi = EnableAnsiOnConsole();
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = java;
             startInfo.Arguments = "-jar \"" + jar + "\"" + QuoteArgs(args);
-            startInfo.WorkingDirectory = client;
+            startInfo.WorkingDirectory = workingDir;
             startInfo.UseShellExecute = false;
             startInfo.EnvironmentVariables["SPC_UPDATER_EXE"] = exePath;
             if (ansi)
@@ -237,6 +243,46 @@ internal static class UpdateLauncher
         return null;
     }
 
+    /// <summary>把内置的 runtime.zip 解压到 %LOCALAPPDATA%，返回 java.exe 路径。</summary>
+    private static string EnsureEmbeddedRuntime()
+    {
+        try
+        {
+            string baseDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SweetPotatoClient-Updater");
+            string runtime = Path.Combine(baseDir, "runtime");
+            string java = Path.Combine(runtime, "bin", "java.exe");
+            if (File.Exists(java))
+            {
+                return java;
+            }
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("runtime.zip"))
+            {
+                if (stream == null)
+                {
+                    return null;
+                }
+                Directory.CreateDirectory(baseDir);
+                string zip = Path.Combine(baseDir, "runtime.zip.tmp");
+                using (FileStream output = File.Create(zip))
+                {
+                    stream.CopyTo(output);
+                }
+                if (Directory.Exists(runtime))
+                {
+                    Directory.Delete(runtime, true);
+                }
+                ZipFile.ExtractToDirectory(zip, runtime);
+                File.Delete(zip);
+            }
+            return File.Exists(java) ? java : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
     private static string FindJava(string client)
     {
         string preferred = Path.Combine(client, "jdk-25.0.5.0.3", "bin", "java.exe");

@@ -58,6 +58,38 @@ tasks.register("bumpVersion") {
     }
 }
 
+/** 用 jlink 生成精简 Java 运行时，打进 update.exe。 */
+val jlinkExecutable: String = run {
+    val candidate = File(System.getProperty("java.home"), "bin/jlink.exe")
+    if (candidate.isFile) candidate.absolutePath else "jlink"
+}
+val embeddedRuntimeDir = layout.buildDirectory.dir("runtime")
+
+tasks.register<Exec>("embeddedRuntime") {
+    group = "distribution"
+    description = "用 jlink 生成内置 Java 运行时"
+    val out = embeddedRuntimeDir.get().asFile
+    outputs.dir(out)
+    doFirst {
+        delete(out)
+        out.parentFile.mkdirs()
+    }
+    commandLine(
+        jlinkExecutable,
+        "--add-modules", "java.base,java.net.http,java.logging,jdk.crypto.ec,jdk.charsets",
+        "--strip-debug", "--no-header-files", "--no-man-pages", "--compress=zip-6",
+        "--output", out.absolutePath
+    )
+}
+
+tasks.register<Zip>("runtimeZip") {
+    group = "distribution"
+    description = "把内置运行时打包成 runtime.zip"
+    dependsOn("embeddedRuntime")
+    from(embeddedRuntimeDir)
+    archiveFileName.set("runtime.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("runtime-zip"))
+}
 /** 客户端根目录（本仓库的上一级）。 */
 val clientRoot = layout.projectDirectory.dir("..")
 
@@ -77,7 +109,7 @@ val cscExecutable: String = run {
 tasks.register<Exec>("buildExe") {
     group = "distribution"
     description = "生成单文件 update.exe 到 SweetPotatoClient 根目录"
-    dependsOn(tasks.jar)
+    dependsOn(tasks.jar, "runtimeZip")
 
     val jarFile = layout.buildDirectory.file("libs/SweetPotatoClient-Updater-${project.version}.jar").get().asFile
     val launcherSource = layout.projectDirectory.file("launcher/UpdateLauncher.cs").asFile
@@ -90,8 +122,10 @@ tasks.register<Exec>("buildExe") {
     }
     val releaseCopy = layout.projectDirectory.dir("dist").file("update-${updaterVersion}.exe").asFile
 
+    val runtimeZipFile = layout.buildDirectory.file("runtime-zip/runtime.zip").get().asFile
     inputs.file(jarFile)
     inputs.file(launcherSource)
+    inputs.file(runtimeZipFile)
     outputs.file(outExe)
     outputs.file(releaseCopy)
 
@@ -123,6 +157,9 @@ tasks.register<Exec>("buildExe") {
         "/optimize+",
         "/out:${outExe.absolutePath}",
         "/resource:${jarFile.absolutePath},update.jar",
+        "/resource:${runtimeZipFile.absolutePath},runtime.zip",
+        "/reference:System.IO.Compression.dll",
+        "/reference:System.IO.Compression.FileSystem.dll",
         launcherSource.absolutePath
     )
 }
