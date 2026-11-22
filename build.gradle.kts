@@ -82,13 +82,33 @@ tasks.register<Exec>("embeddedRuntime") {
     )
 }
 
-tasks.register<Zip>("runtimeZip") {
+/** 把运行时复制到 dist/update-runtime（随 exe 一起分发，不在运行时解压）。 */
+val prepareDistRuntime = tasks.register<Sync>("prepareDistRuntime") {
     group = "distribution"
-    description = "把内置运行时打包成 runtime.zip"
+    description = "把 jlink 运行时同步到 dist/update-runtime"
     dependsOn("embeddedRuntime")
     from(embeddedRuntimeDir)
-    archiveFileName.set("runtime.zip")
-    destinationDirectory.set(layout.buildDirectory.dir("runtime-zip"))
+    into(layout.projectDirectory.dir("dist/update-runtime"))
+}
+
+/** 打包 exe + update-runtime 的发布 zip。 */
+tasks.register<Zip>("packageZip") {
+    group = "distribution"
+    description = "生成 dist/update-<版本>.zip（update.exe + update-runtime）"
+    dependsOn("buildExe", "prepareDistRuntime")
+    val exeName = "update-${updaterVersion}.exe"
+    from(layout.projectDirectory.file("dist/$exeName")) {
+        rename { "update.exe" }
+    }
+    from(layout.projectDirectory.dir("dist/update-runtime")) {
+        into("update-runtime")
+    }
+    archiveFileName.set("update-${updaterVersion}.zip")
+    destinationDirectory.set(layout.projectDirectory.dir("dist"))
+}
+
+tasks.named("assemble") {
+    dependsOn("packageZip")
 }
 /** 客户端根目录（本仓库的上一级）。 */
 val clientRoot = layout.projectDirectory.dir("..")
@@ -109,8 +129,7 @@ val cscExecutable: String = run {
 tasks.register<Exec>("buildExe") {
     group = "distribution"
     description = "生成单文件 update.exe 到 SweetPotatoClient 根目录"
-    dependsOn(tasks.jar, "runtimeZip")
-
+    dependsOn(tasks.jar)
     val jarFile = layout.buildDirectory.file("libs/SweetPotatoClient-Updater-${project.version}.jar").get().asFile
     val launcherSource = layout.projectDirectory.file("launcher/UpdateLauncher.cs").asFile
     // -PskipClientCopy=true：只产出 dist 里的带版本号副本，不覆盖客户端根目录的 update.exe
@@ -122,10 +141,8 @@ tasks.register<Exec>("buildExe") {
     }
     val releaseCopy = layout.projectDirectory.dir("dist").file("update-${updaterVersion}.exe").asFile
 
-    val runtimeZipFile = layout.buildDirectory.file("runtime-zip/runtime.zip").get().asFile
     inputs.file(jarFile)
     inputs.file(launcherSource)
-    inputs.file(runtimeZipFile)
     outputs.file(outExe)
     outputs.file(releaseCopy)
 
@@ -157,9 +174,7 @@ tasks.register<Exec>("buildExe") {
         "/optimize+",
         "/out:${outExe.absolutePath}",
         "/resource:${jarFile.absolutePath},update.jar",
-        "/resource:${runtimeZipFile.absolutePath},runtime.zip",
-        "/reference:System.IO.Compression.dll",
-        "/reference:System.IO.Compression.FileSystem.dll",
+
         launcherSource.absolutePath
     )
 }
