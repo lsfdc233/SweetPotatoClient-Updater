@@ -189,7 +189,7 @@ public final class Git {
         }
     }
 
-    private static void applyIdentity(ProcessBuilder builder) {
+    public static void applyIdentity(ProcessBuilder builder) {
         if (identityNameOverride != null) {
             builder.environment().put("GIT_AUTHOR_NAME", identityNameOverride);
             builder.environment().put("GIT_COMMITTER_NAME", identityNameOverride);
@@ -202,6 +202,26 @@ public final class Git {
     public record FileChange(String type, String path, String oldPath) {
     }
 
+    /** 把某个提交里的文件（二进制安全）导出到 target。 */
+    public static boolean exportFile(Path dir, String rev, String relativePath, Path target) {
+        ProcessBuilder builder = new ProcessBuilder("git", "-c", "core.quotepath=false",
+                "show", rev + ":" + relativePath);
+        builder.directory(dir.toFile());
+        builder.redirectErrorStream(true);
+        builder.environment().put("GIT_TERMINAL_PROMPT", "0");
+        applyIdentity(builder);
+        try {
+            builder.redirectOutput(ProcessBuilder.Redirect.to(target.toFile()));
+            Process process = builder.start();
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0 && Files.isRegularFile(target) && Files.size(target) > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
     /** 某个提交的改动文件（含 A/M/D/R 类型）。 */
     public static List<FileChange> commitChanges(Path dir, String rev) {
         Result result = run(dir, "-c", "core.quotepath=false", "show", "--name-status", "--format=", rev);

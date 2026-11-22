@@ -393,6 +393,12 @@ public final class Main {
                 conflicts.add(path);
             }
         }
+        String updaterRel = updaterRelativePath();
+        boolean updaterInIncoming = updaterRel != null
+                && incoming.stream().anyMatch(path -> path.equalsIgnoreCase(updaterRel));
+        if (updaterInIncoming) {
+            conflicts.removeIf(path -> path.equalsIgnoreCase(updaterRel));
+        }
         Ui.println();
         if (conflicts.isEmpty()) {
             Ui.println("  本地没有会被覆盖的冲突文件。");
@@ -406,11 +412,19 @@ public final class Main {
                 Ui.println("    " + Ui.gray("... 其余 " + (conflicts.size() - shown) + " 项省略"));
             }
         }
+        if (updaterInIncoming) {
+            Ui.println();
+            Ui.println("  " + Ui.yellow("本次更新包含更新器自身（" + updaterRel + "），将通过热替换完成。"));
+        }
         Ui.println();
         if (!Ui.confirm("确认更新？(y/n)")) {
             Ui.println("  已取消。");
             Ui.pause("按 Enter 返回主菜单...");
             return false;
+        }
+
+        if (updaterInIncoming) {
+            return startUpdaterSelfUpdate(upstream, updaterRel);
         }
 
         for (String path : conflicts) {
@@ -633,6 +647,54 @@ public final class Main {
         return helper;
     }
 
+    private String updaterRelativePath() {
+        String env = System.getenv("SPC_UPDATER_EXE");
+        if (env == null || env.isBlank()) {
+            return null;
+        }
+        Path exe = Path.of(env).toAbsolutePath();
+        if (!exe.startsWith(client)) {
+            return null;
+        }
+        return client.relativize(exe).toString().replace('\\', '/');
+    }
+
+    /** 更新内容包含更新器本身：导出新 exe，退出后由助手执行 pull + 热替换 + 重启。 */
+    private boolean startUpdaterSelfUpdate(String upstream, String updaterRel) {
+        String env = System.getenv("SPC_UPDATER_EXE");
+        if (env == null || env.isBlank()) {
+            Ui.println("  " + Ui.red("无法定位当前 update.exe，请通过 update.exe 启动。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        Path exe = Path.of(env).toAbsolutePath();
+        Path newExe = exe.resolveSibling(exe.getFileName().toString() + ".new");
+        Ui.println("  正在导出更新器新版本...");
+        if (!Git.exportFile(client, upstream, updaterRel, newExe)) {
+            Ui.println("  " + Ui.red("导出更新器失败，请手动处理。"));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        try {
+            Path helper = createApplyHelper(exe);
+            ProcessBuilder builder = new ProcessBuilder(
+                    helper.toString(),
+                    "--apply-update-pull",
+                    newExe.toString(),
+                    exe.toString(),
+                    String.valueOf(launcherPid()),
+                    client.toString());
+            builder.directory(client.toFile());
+            builder.inheritIO();
+            Git.applyIdentity(builder);
+            builder.start();
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("启动替换助手失败：" + e.getMessage()));
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        return true;
+    }
     /** 当前 update.exe 的路径（由启动器通过 SPC_UPDATER_EXE 传入）。 */
     private Path currentExePath() {
         String fromEnv = System.getenv("SPC_UPDATER_EXE");

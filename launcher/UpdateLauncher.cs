@@ -132,6 +132,11 @@ internal static class UpdateLauncher
                 ClearConsoleBuffer();
                 return 0;
             }
+            if (args != null && args.Length >= 5
+                && string.Equals(args[0], "--apply-update-pull", StringComparison.OrdinalIgnoreCase))
+            {
+                return ApplyUpdateWithPull(args[1], args[2], args[3], args[4]);
+            }
             if (args != null && args.Length >= 4
                 && string.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
             {
@@ -295,6 +300,41 @@ internal static class UpdateLauncher
             }
             return jar;
         }
+    }
+    /// <summary>先 git pull（此时旧 update.exe 已退出，可写），再热替换并重启。</summary>
+    private static int ApplyUpdateWithPull(string sourcePath, string targetPath, string launcherPidText, string repoDir)
+    {
+        int pid;
+        int.TryParse(launcherPidText, out pid);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+        while (pid > 0 && ProcessExists(pid) && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(200);
+        }
+
+        try
+        {
+            Console.WriteLine("正在执行 git pull ...");
+            ProcessStartInfo git = new ProcessStartInfo("git");
+            git.Arguments = "-c pull.rebase=false pull --no-rebase --no-edit";
+            git.WorkingDirectory = repoDir;
+            git.UseShellExecute = false;
+            git.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+            using (Process process = Process.Start(git))
+            {
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    Console.Error.WriteLine("[SweetPotatoClient-Updater] git pull 返回 " + process.ExitCode + "，可稍后在更新器里重试。");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine("[SweetPotatoClient-Updater] git pull 失败：" + e.Message);
+        }
+
+        return ApplyUpdate(sourcePath, targetPath, "0");
     }
     private static int ApplyUpdate(string sourcePath, string targetPath, string launcherPidText)
     {
