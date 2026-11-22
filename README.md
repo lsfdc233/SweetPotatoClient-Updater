@@ -68,6 +68,7 @@ update.exe --client=D:\path\to\SweetPotatoClient
 update.exe --color                :: 强制彩色（默认自动检测）
 update.exe --no-color             :: 关闭颜色
 update.exe --version              :: 显示版本
+update.exe update [-y]            :: 直接执行客户端更新（-y 自动确认，无交互）
 ```
 
 颜色：

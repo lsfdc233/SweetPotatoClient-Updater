@@ -424,17 +424,27 @@ internal static class UpdateLauncher
 
     private static void CleanupStaleUpdate(string exeDir)
     {
-        try
+        TryDelete(Path.Combine(exeDir, "update.exe.new"));
+        TryDelete(Path.Combine(exeDir, "update.exe.old"));
+    }
+
+    private static void TryDelete(string path)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            string stale = Path.Combine(exeDir, "update.exe.new");
-            if (File.Exists(stale))
+            try
             {
-                File.Delete(stale);
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+                File.Delete(path);
+                return;
             }
-        }
-        catch (Exception)
-        {
-            // 忽略：下次启动再清理
+            catch (Exception)
+            {
+                Thread.Sleep(200);
+            }
         }
     }
 }

@@ -24,6 +24,7 @@ public final class Main {
 
     private volatile ReleaseClient.Release latestRelease;
     private volatile String latestReleaseError = "";
+    private boolean autoMode;
 
     private Main(Path client) {
         this.client = client;
@@ -33,6 +34,8 @@ public final class Main {
     public static void main(String[] args) {
         boolean wantColor = true;
         boolean forceColor = false;
+        boolean autoYes = false;
+        String command = "";
         Path clientArg = null;
         for (String arg : args) {
             switch (arg) {
@@ -49,12 +52,22 @@ public final class Main {
                 default -> {
                     if (arg.startsWith("--client=")) {
                         clientArg = Path.of(arg.substring("--client=".length()));
+                    } else if (arg.equalsIgnoreCase("update")) {
+                        command = "update";
+                    } else if (arg.equalsIgnoreCase("-y") || arg.equalsIgnoreCase("--yes")) {
+                        autoYes = true;
                     }
                 }
             }
         }
         Ui.init(wantColor, forceColor);
-        new Main(resolveClient(clientArg)).run();
+        Main app = new Main(resolveClient(clientArg));
+        app.autoMode = autoYes;
+        if ("update".equals(command)) {
+            app.runCliUpdate();
+        } else {
+            app.run();
+        }
     }
 
     private static void printHelp() {
@@ -66,6 +79,7 @@ public final class Main {
         System.out.println("  --color           强制彩色输出（默认自动检测）");
         System.out.println("  --no-color        关闭颜色（也可设置 NO_COLOR 环境变量）");
         System.out.println("  --version         显示更新器版本");
+        System.out.println("  update [-y]       直接执行客户端更新（-y 自动确认，无交互）");
         System.out.println("  --help            显示帮助");
     }
 
@@ -346,7 +360,7 @@ public final class Main {
         Git.Result fetch = Git.run(client, "fetch", "--prune");
         if (!fetch.ok()) {
             showOutput(fetch, "获取上游失败（网络或权限问题）：");
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         String upstream = Git.upstream(client);
@@ -380,7 +394,7 @@ public final class Main {
             if (aheadBehind[0] > 0) {
                 Ui.println("  " + Ui.yellow("本地领先上游 " + aheadBehind[0] + " 个提交（未推送）"));
             }
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         Ui.println("  本地落后上游 " + aheadBehind[1] + " 个提交。");
@@ -417,14 +431,26 @@ public final class Main {
             Ui.println("  " + Ui.yellow("本次更新包含更新器自身（" + updaterRel + "），将通过热替换完成。"));
         }
         Ui.println();
-        if (!Ui.confirm("确认更新？(y/n)")) {
+        if (!autoMode && !Ui.confirm("确认更新？(y/n)")) {
             Ui.println("  已取消。");
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
 
         if (updaterInIncoming) {
-            return startUpdaterSelfUpdate(upstream, updaterRel);
+            if (autoMode) {
+                // 自动模式（已经从 update.exe.old 启动）：update.exe 路径已让出，继续普通 pull
+            } else {
+                Path renamed = renameRunningUpdater();
+                if (renamed != null) {
+                    Ui.println("  已把当前更新器重命名为 " + renamed.getFileName()
+                            + "，正在以 update -y 热重启完成更新...");
+                    if (spawnAutoUpdate(renamed)) {
+                        return true;
+                    }
+                }
+                return startUpdaterSelfUpdate(upstream, updaterRel);
+            }
         }
 
         for (String path : conflicts) {
@@ -441,7 +467,7 @@ public final class Main {
             if (retry.isEmpty()) {
                 showOutput(pull, "无法自动判断冲突文件，请手动处理：");
                 pcl.relock();
-                Ui.pause("按 Enter 返回主菜单...");
+                returnHome();
                 return false;
             }
             for (String path : retry) {
@@ -453,7 +479,7 @@ public final class Main {
         if (!pull.ok()) {
             showOutput(pull, "更新失败，请手动处理：");
             pcl.relock();
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
 
@@ -463,7 +489,7 @@ public final class Main {
         Ui.println("  当前提交：" + Git.shortHash(client, "HEAD") + "  " + Ui.gray(Git.subject(client, "HEAD")));
         Ui.println("  配置文件已重新回锁（只读）。");
         Ui.println();
-        Ui.pause("按 Enter 返回主菜单...");
+        returnHome();
         return false;
     }
 
@@ -512,13 +538,13 @@ public final class Main {
         } catch (Exception e) {
             Ui.println("  " + Ui.red("查询最新 Release 失败：" + e.getMessage()));
             Ui.println("  " + Ui.gray(UpdaterInfo.UPDATER_REPO + "/releases"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         Ui.println("  最新版本：" + Ui.cyan(displayVersion(release.tag())));
         if (!VersionUtil.isNewer(release.tag(), UpdaterInfo.VERSION)) {
             Ui.println("  " + Ui.green("已经是最新版本，无需更新。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
 
@@ -535,7 +561,7 @@ public final class Main {
         }
         if (exeAsset == null) {
             Ui.println("  " + Ui.red("该 Release 没有可用的 update-*.exe 附件。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         ReleaseClient.Asset shaAsset = release.asset(exeAsset.name() + ".sha256").orElse(null);
@@ -558,20 +584,20 @@ public final class Main {
         if (shaAsset == null) {
             Ui.println("  " + Ui.red("缺少 " + exeAsset.name() + ".sha256 校验文件，已取消更新。"));
             Ui.println("  " + Ui.gray("请先给 Release 补传校验文件后再试。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         String exeEnv = System.getenv("SPC_UPDATER_EXE");
         if (exeEnv == null || exeEnv.isBlank()) {
             Ui.println("  " + Ui.red("自更新需要由 update.exe 启动（当前不是）。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         Path exe = Path.of(exeEnv).toAbsolutePath();
         Ui.println();
-        if (!Ui.confirm("确认更新？(y/n)")) {
+        if (!autoMode && !Ui.confirm("确认更新？(y/n)")) {
             Ui.println("  已取消。");
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
 
@@ -600,7 +626,7 @@ public final class Main {
                 // 忽略清理失败
             }
             Ui.println("  " + Ui.red("下载/校验失败：" + e.getMessage()));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
 
@@ -619,7 +645,7 @@ public final class Main {
         } catch (Exception e) {
             Ui.println("  " + Ui.red("启动替换进程失败：" + e.getMessage()));
             Ui.println("  新版本已下载到：" + Ui.gray(temp.toString()));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         return true;
@@ -647,6 +673,94 @@ public final class Main {
         return helper;
     }
 
+    private void returnHome() {
+        if (!autoMode) {
+            Ui.pause("按 Enter 返回主菜单...");
+        }
+    }
+
+    /** CLI：update [-y]，直接跑一遍客户端更新，结束后把新版本 updater 拉起来。 */
+    private void runCliUpdate() {
+        if (!Git.available()) {
+            System.err.println("未找到 git");
+            System.exit(1);
+        }
+        if (!Git.isRepo(client)) {
+            System.err.println("当前目录不是 git 仓库：" + client);
+            System.exit(1);
+        }
+        Git.ensureIdentity(client);
+        updateClient();
+        launchCanonicalIfNeeded();
+    }
+
+    /** 把正在运行的 update.exe 改名成 update.exe.old，让出路径给 git pull。 */
+    private Path renameRunningUpdater() {
+        String env = System.getenv("SPC_UPDATER_EXE");
+        if (env == null || env.isBlank()) {
+            return null;
+        }
+        Path exe = Path.of(env).toAbsolutePath();
+        Path renamed = exe.resolveSibling(exe.getFileName().toString() + ".old");
+        try {
+            Files.deleteIfExists(renamed);
+            Files.move(exe, renamed);
+            return renamed;
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("重命名更新器失败：" + e.getMessage() + "，改用助手方式。"));
+            return null;
+        }
+    }
+
+    /** 用改名后的 update.exe.old 以 update -y 参数热重启，自动继续更新。 */
+    private boolean spawnAutoUpdate(Path renamedExe) {
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    renamedExe.toString(), "update", "-y", "--client=" + client);
+            builder.directory(client.toFile());
+            builder.inheritIO();
+            Git.applyIdentity(builder);
+            builder.start();
+            return true;
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("热重启失败：" + e.getMessage()));
+            return false;
+        }
+    }
+
+    /** 自动流程结束后：优先拉起 pull 下来的 update.exe；若没有则把 .old 还原。 */
+    private void launchCanonicalIfNeeded() {
+        Path canonical = client.resolve("update.exe");
+        Path old = canonical.resolveSibling("update.exe.old");
+        try {
+            if (!Files.isRegularFile(canonical) && Files.isRegularFile(old)) {
+                Files.move(old, canonical);
+            }
+        } catch (Exception ignored) {
+            // 还原失败就保留 .old
+        }
+        if (!Files.isRegularFile(canonical)) {
+            return;
+        }
+        String env = System.getenv("SPC_UPDATER_EXE");
+        if (env != null && !env.isBlank()) {
+            try {
+                if (Files.isSameFile(Path.of(env).toAbsolutePath(), canonical)) {
+                    return;
+                }
+            } catch (Exception ignored) {
+                // 路径已变化，继续启动
+            }
+        }
+        try {
+            ProcessBuilder builder = new ProcessBuilder(canonical.toString(), "--client=" + client);
+            builder.directory(client.toFile());
+            builder.inheritIO();
+            builder.start();
+        } catch (Exception ignored) {
+            // 启动失败保留现场
+        }
+    }
     private String updaterRelativePath() {
         String env = System.getenv("SPC_UPDATER_EXE");
         if (env == null || env.isBlank()) {
@@ -664,7 +778,7 @@ public final class Main {
         String env = System.getenv("SPC_UPDATER_EXE");
         if (env == null || env.isBlank()) {
             Ui.println("  " + Ui.red("无法定位当前 update.exe，请通过 update.exe 启动。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         Path exe = Path.of(env).toAbsolutePath();
@@ -672,7 +786,7 @@ public final class Main {
         Ui.println("  正在导出更新器新版本...");
         if (!Git.exportFile(client, upstream, updaterRel, newExe)) {
             Ui.println("  " + Ui.red("导出更新器失败，请手动处理。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         try {
@@ -690,7 +804,7 @@ public final class Main {
             builder.start();
         } catch (Exception e) {
             Ui.println("  " + Ui.red("启动替换助手失败：" + e.getMessage()));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return false;
         }
         return true;
@@ -734,7 +848,7 @@ public final class Main {
         if (!pcl.exists()) {
             Ui.println("  " + Ui.red("未找到 PCL/config.v1.yml。"));
             Ui.println("  " + Ui.gray("可以先执行 [4] -W 回锁，它会从模板生成配置文件。"));
-            Ui.pause("按 Enter 返回主菜单...");
+            returnHome();
             return;
         }
         pcl.unlock();
@@ -744,7 +858,7 @@ public final class Main {
         Ui.println("  PCL 会改写该文件里的 Java 路径，属于正常现象。");
         Ui.println();
         Ui.println("  " + Ui.yellow("修改完成后，请回到主菜单执行 [4] -W 回锁配置文件。"));
-        Ui.pause("按 Enter 返回主菜单...");
+        returnHome();
     }
 
     private void relockConfig() {
@@ -753,7 +867,7 @@ public final class Main {
             boolean created = pcl.ensureFromTemplate();
             if (!created) {
                 Ui.println("  " + Ui.red("未找到 PCL/config.v1.yml，也没有 PCL/config.v1.yml.template。"));
-                Ui.pause("按 Enter 返回主菜单...");
+                returnHome();
                 return;
             }
             Ui.println("  " + Ui.gray("已从模板生成 PCL/config.v1.yml。"));
@@ -763,6 +877,6 @@ public final class Main {
         Ui.println("  已重新固定 Java 路径：");
         Ui.println("    " + Ui.gray(javaSelect.isEmpty() ? "（未找到 VersionArgumentJavaSelect 行）" : javaSelect));
         Ui.println("  已回锁：" + Ui.green("PCL\\config.v1.yml") + "（只读）");
-        Ui.pause("按 Enter 返回主菜单...");
+        returnHome();
     }
 }
