@@ -75,10 +75,15 @@ public final class Main {
 
     /** 优先找 remote 指向 SweetPotatoClient（不是 Updater）的仓库。 */
     private static Path resolveClient(Path explicit) {
-        List<Path> primary = new ArrayList<>();
         if (explicit != null) {
-            primary.add(explicit.toAbsolutePath().normalize());
+            Path target = explicit.toAbsolutePath().normalize();
+            if (Files.isDirectory(target.resolve(".git"))) {
+                return target;
+            }
+            Path repo = walkUpForAnyRepo(target);
+            return repo != null ? repo : target;
         }
+        List<Path> primary = new ArrayList<>();
         primary.add(Path.of("").toAbsolutePath().normalize());
         Path envDir = envExeDir();
         if (envDir != null) {
@@ -269,10 +274,17 @@ public final class Main {
         }
     }
 
+    private static String displayVersion(String tag) {
+        if (tag == null || tag.isBlank()) {
+            return "?";
+        }
+        return tag.startsWith("v") ? tag : "v" + tag;
+    }
+
     private String cloudVersionText() {
         ReleaseClient.Release release = latestRelease;
         if (release != null) {
-            return release.tag();
+            return displayVersion(release.tag());
         }
         if (!latestReleaseError.isEmpty()) {
             return "未知（" + latestReleaseError + "）";
@@ -296,7 +308,7 @@ public final class Main {
         Ui.println("  更新器仓库：" + Ui.gray(UpdaterInfo.UPDATER_REPO));
         Ui.println("  客户端仓库：" + Ui.gray(UpdaterInfo.CLIENT_REPO));
         if (newer) {
-            Ui.println("  " + Ui.yellow("提示：发现更新器新版本 " + latestRelease.tag() + "，按 [2] 更新"));
+            Ui.println("  " + Ui.yellow("提示：发现更新器新版本 " + displayVersion(latestRelease.tag()) + "，按 [2] 更新"));
         }
         Ui.println();
         Ui.println("  客户端：" + Ui.gray(client.toString()));
@@ -322,7 +334,7 @@ public final class Main {
         Ui.println();
         Ui.println("  " + Ui.cyan("[1]") + " 更新 SweetPotatoClient");
         Ui.println("  " + Ui.cyan("[2]") + " 更新 SweetPotatoClient-Updater"
-                + (newer ? Ui.yellow("  ← 新版本 " + latestRelease.tag()) : ""));
+                + (newer ? Ui.yellow("  ← 新版本 " + displayVersion(latestRelease.tag())) : ""));
         Ui.println("  " + Ui.cyan("[3]") + " +W 解锁配置文件（PCL 修改设置前）");
         Ui.println("  " + Ui.cyan("[4]") + " -W 回锁配置文件（内置 JDK 路径 + 只读）");
         Ui.println("  " + Ui.cyan("[5]") + " 退出");
@@ -347,38 +359,55 @@ public final class Main {
         Ui.println("  上游最近提交：");
         Ui.println("    " + Git.commitLine(client, upstream));
         Ui.println("    " + Ui.yellow(Git.subject(client, upstream)));
-        List<String> stat = Git.logStat(client, upstream, MAX_STAT_LINES);
-        if (!stat.isEmpty()) {
+        List<Git.FileChange> changes = Git.commitChanges(client, upstream);
+        if (!changes.isEmpty()) {
             Ui.println();
             Ui.println("  文件变更：");
-            for (String line : stat) {
-                Ui.println("    " + Ui.gray(line));
+            int shown = Math.min(changes.size(), MAX_STAT_LINES);
+            for (int i = 0; i < shown; i++) {
+                Ui.println("    " + Ui.gray(describeChange(changes.get(i))));
+            }
+            if (changes.size() > shown) {
+                Ui.println("    " + Ui.gray("... 其余 " + (changes.size() - shown) + " 项省略"));
             }
         }
         Ui.println();
         if (aheadBehind[1] == 0) {
-            Ui.println("  " + Ui.green("已经是最新版本，无需更新。"));
+            Ui.println("  " + Ui.green("已经与上游同步，无需更新。"));
+            Ui.println();
+            Ui.println("  本地提交：" + Git.shortHash(client, "HEAD") + "  " + Ui.gray(Git.subject(client, "HEAD")));
+            Ui.println("  上游提交：" + Git.shortHash(client, upstream) + "  " + Ui.gray(upstream));
+            Ui.println("  配置：" + (pcl.exists()
+                    ? (pcl.isReadOnly() ? Ui.green("已锁定（只读）") : Ui.yellow("已解锁（可写）"))
+                    : Ui.yellow("未生成")));
             if (aheadBehind[0] > 0) {
-                Ui.println("  本地领先上游 " + aheadBehind[0] + " 个提交。");
+                Ui.println("  " + Ui.yellow("本地领先上游 " + aheadBehind[0] + " 个提交（未推送）"));
             }
             Ui.pause("按 Enter 返回主菜单...");
             return false;
         }
         Ui.println("  本地落后上游 " + aheadBehind[1] + " 个提交。");
-        List<String> changes = Git.status(client);
-        if (!changes.isEmpty()) {
-            Ui.println();
-            Ui.println("  " + Ui.red("警告：更新会覆盖/丢弃以下本地已修改文件（共 " + changes.size() + " 项）："));
-            int shown = Math.min(changes.size(), MAX_CHANGES_SHOWN);
-            for (int i = 0; i < shown; i++) {
-                String line = changes.get(i);
-                if (line.length() > 100) {
-                    line = line.substring(0, 100) + "...";
-                }
-                Ui.println("    " + Ui.gray(line));
+
+        // 只提示「上游会改到」且本地有改动的文件
+        List<String> incoming = Git.incomingPaths(client, upstream);
+        List<String> conflicts = new ArrayList<>();
+        for (String path : incoming) {
+            Git.Result status = Git.run(client, "status", "--porcelain", "--", path);
+            if (status.ok() && status.lines().stream().anyMatch(line -> !line.isBlank())) {
+                conflicts.add(path);
             }
-            if (changes.size() > shown) {
-                Ui.println("    " + Ui.gray("... 其余 " + (changes.size() - shown) + " 项省略"));
+        }
+        Ui.println();
+        if (conflicts.isEmpty()) {
+            Ui.println("  本地没有会被覆盖的冲突文件。");
+        } else {
+            Ui.println("  " + Ui.red("警告：以下 " + conflicts.size() + " 个本地文件与上游改动冲突，更新会丢弃本地版本："));
+            int shown = Math.min(conflicts.size(), MAX_CHANGES_SHOWN);
+            for (int i = 0; i < shown; i++) {
+                Ui.println("    " + Ui.gray(conflicts.get(i)));
+            }
+            if (conflicts.size() > shown) {
+                Ui.println("    " + Ui.gray("... 其余 " + (conflicts.size() - shown) + " 项省略"));
             }
         }
         Ui.println();
@@ -388,21 +417,26 @@ public final class Main {
             return false;
         }
 
+        for (String path : conflicts) {
+            boolean ok = Git.prepareForPull(client, path);
+            Ui.println("    " + (ok ? Ui.gray("已丢弃本地改动：" + path) : Ui.red("无法处理：" + path)));
+        }
+
         pcl.unlock();
         Git.Result pull = Git.run(client, "pull");
         if (!pull.ok()) {
             Ui.println();
             Ui.println("  " + Ui.yellow("git pull 失败，尝试清理冲突文件后重试..."));
-            List<String> conflicts = Git.conflicts(pull.lines());
-            if (conflicts.isEmpty()) {
+            List<String> retry = Git.conflicts(pull.lines());
+            if (retry.isEmpty()) {
                 showOutput(pull, "无法自动判断冲突文件，请手动处理：");
                 pcl.relock();
                 Ui.pause("按 Enter 返回主菜单...");
                 return false;
             }
-            for (String file : conflicts) {
-                boolean ok = Git.discard(client, file);
-                Ui.println("    " + (ok ? Ui.gray("已丢弃本地改动：" + file) : Ui.red("无法删除：" + file)));
+            for (String path : retry) {
+                boolean ok = Git.prepareForPull(client, path);
+                Ui.println("    " + (ok ? Ui.gray("已丢弃本地改动：" + path) : Ui.red("无法处理：" + path)));
             }
             pull = Git.run(client, "pull");
         }
@@ -436,6 +470,29 @@ public final class Main {
         return false;
     }
 
+    private static String describeChange(Git.FileChange change) {
+        String type = change.type();
+        String label;
+        if (type.startsWith("A")) {
+            label = "新增";
+        } else if (type.startsWith("D")) {
+            label = "删除";
+        } else if (type.startsWith("M")) {
+            label = "修改";
+        } else if (type.startsWith("R")) {
+            label = "重命名";
+        } else if (type.startsWith("C")) {
+            label = "复制";
+        } else if (type.startsWith("T")) {
+            label = "类型变更";
+        } else {
+            label = "变更";
+        }
+        if (change.oldPath() != null) {
+            return label + "  " + change.oldPath() + " -> " + change.path();
+        }
+        return label + "  " + change.path();
+    }
     private void showOutput(Git.Result result, String title) {
         Ui.println("  " + Ui.red(title));
         for (String line : result.lines()) {
@@ -461,7 +518,7 @@ public final class Main {
             Ui.pause("按 Enter 返回主菜单...");
             return false;
         }
-        Ui.println("  最新版本：" + Ui.cyan(release.tag()));
+        Ui.println("  最新版本：" + Ui.cyan(displayVersion(release.tag())));
         if (!VersionUtil.isNewer(release.tag(), UpdaterInfo.VERSION)) {
             Ui.println("  " + Ui.green("已经是最新版本，无需更新。"));
             Ui.pause("按 Enter 返回主菜单...");
@@ -469,7 +526,13 @@ public final class Main {
         }
 
         String expectedName = "update-" + release.tag() + ".exe";
+        String expectedNameV = release.tag().startsWith("v")
+                ? expectedName
+                : "update-v" + release.tag() + ".exe";
         ReleaseClient.Asset exeAsset = release.asset(expectedName).orElse(null);
+        if (exeAsset == null) {
+            exeAsset = release.asset(expectedNameV).orElse(null);
+        }
         if (exeAsset == null) {
             exeAsset = release.firstUpdateExe().orElse(null);
         }

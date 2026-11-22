@@ -168,6 +168,59 @@ public final class Git {
         return out;
     }
 
+    public record FileChange(String type, String path, String oldPath) {
+    }
+
+    /** 某个提交的改动文件（含 A/M/D/R 类型）。 */
+    public static List<FileChange> commitChanges(Path dir, String rev) {
+        Result result = run(dir, "-c", "core.quotepath=false", "show", "--name-status", "--format=", rev);
+        List<FileChange> changes = new ArrayList<>();
+        if (!result.ok()) {
+            return changes;
+        }
+        for (String line : result.lines()) {
+            if (line.isBlank()) {
+                continue;
+            }
+            String[] parts = line.split("\t");
+            if (parts.length < 2) {
+                continue;
+            }
+            String type = parts[0];
+            if (parts.length >= 3) {
+                changes.add(new FileChange(type, parts[2], parts[1]));
+            } else {
+                changes.add(new FileChange(type, parts[1], null));
+            }
+        }
+        return changes;
+    }
+
+    /** 本次更新会从上游带下来的文件路径（不含重命名的旧路径拆解）。 */
+    public static List<String> incomingPaths(Path dir, String upstream) {
+        Result result = run(dir, "-c", "core.quotepath=false", "diff", "--name-only", "--no-renames",
+                "HEAD..." + upstream);
+        if (!result.ok()) {
+            return List.of();
+        }
+        return result.lines().stream().filter(line -> !line.isBlank()).toList();
+    }
+
+    /** 丢弃某个文件的本地改动：已跟踪的还原到 HEAD，未跟踪的删除。 */
+    public static boolean prepareForPull(Path dir, String relativePath) {
+        boolean tracked = run(dir, "ls-files", "--error-unmatch", "--", relativePath).ok();
+        if (tracked) {
+            run(dir, "checkout", "--", relativePath);
+            return run(dir, "diff", "--quiet", "--", relativePath).ok();
+        }
+        Path file = dir.resolve(relativePath);
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException ignored) {
+            // 删除失败交给调用方提示
+        }
+        return !Files.exists(file);
+    }
     public static List<String> status(Path dir) {
         Result result = run(dir, "status", "--porcelain");
         if (!result.ok()) {

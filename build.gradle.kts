@@ -81,7 +81,13 @@ tasks.register<Exec>("buildExe") {
 
     val jarFile = layout.buildDirectory.file("libs/SweetPotatoClient-Updater-${project.version}.jar").get().asFile
     val launcherSource = layout.projectDirectory.file("launcher/UpdateLauncher.cs").asFile
-    val outExe = clientRoot.file("update.exe").asFile
+    // -PskipClientCopy=true：只产出 dist 里的带版本号副本，不覆盖客户端根目录的 update.exe
+    val skipClientCopy = (project.findProperty("skipClientCopy") as String?)?.toBoolean() ?: false
+    val outExe = if (skipClientCopy) {
+        layout.buildDirectory.file("exe/update.exe").get().asFile
+    } else {
+        clientRoot.file("update.exe").asFile
+    }
     val releaseCopy = layout.projectDirectory.dir("dist").file("update-${updaterVersion}.exe").asFile
 
     inputs.file(jarFile)
