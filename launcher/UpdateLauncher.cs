@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using Microsoft.Win32;
+using System.IO.Compression;
 using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -153,7 +154,11 @@ internal static class UpdateLauncher
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
             CleanupStaleUpdate(exeDir);
             string client = FindClientRoot(exeDir);
-            string java = FindBundledJava(exeDir);
+            string java = EnsureEmbeddedRuntime();
+            if (java == null)
+            {
+                java = FindBundledJava(exeDir);
+            }
             if (java == null && client != null)
             {
                 java = FindClientJava(client);
@@ -164,8 +169,7 @@ internal static class UpdateLauncher
             }
             if (java == null)
             {
-                OpenJdkDownloadPage();
-                Fail("没有找到可用的 Java 21+ 运行时，已打开 JDK 下载页面；安装后重新运行 update.exe。");
+                Fail("内置运行时解压失败，系统里也没有可用的 Java 21+ 运行时。");
                 return 3;
             }
             string workingDir = client != null ? client : exeDir;
@@ -244,6 +248,46 @@ internal static class UpdateLauncher
         return null;
     }
 
+    /// <summary>把内嵌的 runtime.zip 解压到 %LOCALAPPDATA%\SweetPotatoClient-Updater\runtime。</summary>
+    private static string EnsureEmbeddedRuntime()
+    {
+        try
+        {
+            string baseDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SweetPotatoClient-Updater");
+            string runtime = Path.Combine(baseDir, "runtime");
+            string java = Path.Combine(runtime, "bin", "java.exe");
+            if (File.Exists(java))
+            {
+                return java;
+            }
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("runtime.zip"))
+            {
+                if (stream == null)
+                {
+                    return null;
+                }
+                Directory.CreateDirectory(baseDir);
+                string zip = Path.Combine(baseDir, "runtime.zip.tmp");
+                using (FileStream output = File.Create(zip))
+                {
+                    stream.CopyTo(output);
+                }
+                if (Directory.Exists(runtime))
+                {
+                    Directory.Delete(runtime, true);
+                }
+                ZipFile.ExtractToDirectory(zip, runtime);
+                File.Delete(zip);
+            }
+            return File.Exists(java) ? java : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
     private static string FindBundledJava(string exeDir)
     {
         string bundled = Path.Combine(exeDir, "update-runtime", "bin", "java.exe");
@@ -481,21 +525,6 @@ internal static class UpdateLauncher
         catch (Exception)
         {
             return false;
-        }
-    }
-
-    private static void OpenJdkDownloadPage()
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo("https://adoptium.net/temurin/releases/?version=21&os=windows&arch=x64&package=jdk")
-            {
-                UseShellExecute = true
-            });
-        }
-        catch (Exception)
-        {
-            // 打开浏览器失败时仅提示
         }
     }
     private static string ExtractJar()
