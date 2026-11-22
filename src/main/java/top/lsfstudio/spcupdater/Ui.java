@@ -29,14 +29,17 @@ public final class Ui {
     private Ui() {
     }
 
-    public static void init(boolean wantColor) {
+    public static void init(boolean wantColor, boolean forceColor) {
         reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        boolean terminal = System.console() != null;
-        boolean ansi = System.getenv("WT_SESSION") != null
+        boolean console = System.console() != null;
+        boolean ansi = forceColor
+                || "1".equals(System.getenv("SPC_UPDATER_ANSI"))
+                || System.getenv("WT_SESSION") != null
                 || System.getenv("TERM_PROGRAM") != null
                 || System.getenv("ANSICON") != null
                 || System.getenv("TERM") != null;
-        color = wantColor && terminal && ansi;
+        boolean noColorEnv = System.getenv("NO_COLOR") != null;
+        color = wantColor && !noColorEnv && ansi && (console || forceColor);
     }
 
     public static boolean colorEnabled() {

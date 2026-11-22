@@ -52,9 +52,17 @@ SweetPotatoClient-Updater\build\libs\SweetPotatoClient-Updater-v0.0.1-00001.jar
 ```bat
 update.exe                        :: 自动向上查找 SweetPotatoClient 仓库
 update.exe --client=D:\path\to\SweetPotatoClient
-update.exe --no-color             :: 关闭 ANSI 颜色
+update.exe --color                :: 强制彩色（默认自动检测）
+update.exe --no-color             :: 关闭颜色
 update.exe --version              :: 显示版本
 ```
+
+颜色：
+
+- 由 `update.exe` 启动时给控制台打开 ANSI/VT 转义（`SetConsoleMode` + `ENABLE_VIRTUAL_TERMINAL_PROCESSING`），
+  所以 cmd / conhost / Windows Terminal 都能显示彩色；
+- 直接 `java -jar update.jar` 运行时，只有 Windows Terminal 等原生支持 ANSI 的终端才会彩色；
+- 设置环境变量 `NO_COLOR=1` 可强制关闭彩色。
 
 版本格式：`v主.次.修订-构建号`，例如 `v0.0.1-00001`。
 

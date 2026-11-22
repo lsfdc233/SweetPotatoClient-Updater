@@ -51,6 +51,17 @@ tasks.register<Exec>("buildExe") {
 
     doFirst {
         outExe.parentFile.mkdirs()
+        var waited = 0
+        while (outExe.exists() && waited < 5000) {
+            if (outExe.delete()) {
+                break
+            }
+            Thread.sleep(200)
+            waited += 200
+        }
+        if (outExe.exists()) {
+            throw GradleException("无法覆盖 ${outExe.absolutePath}：请先关闭正在运行的 update.exe")
+        }
         logger.lifecycle("生成单文件更新器：${outExe.absolutePath}")
     }
     commandLine(

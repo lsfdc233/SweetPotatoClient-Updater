@@ -22,10 +22,12 @@ public final class Main {
 
     public static void main(String[] args) {
         boolean wantColor = true;
+        boolean forceColor = false;
         Path clientArg = null;
         for (String arg : args) {
             switch (arg) {
                 case "--no-color" -> wantColor = false;
+                case "--color" -> forceColor = true;
                 case "--version", "-v" -> {
                     System.out.println(UpdaterInfo.VERSION);
                     return;
@@ -41,7 +43,7 @@ public final class Main {
                 }
             }
         }
-        Ui.init(wantColor);
+        Ui.init(wantColor, forceColor);
         new Main(resolveClient(clientArg)).run();
     }
 
@@ -51,7 +53,8 @@ public final class Main {
         System.out.println("用法：update.exe [选项]");
         System.out.println();
         System.out.println("  --client=<目录>   指定 SweetPotatoClient 根目录（默认自动查找）");
-        System.out.println("  --no-color        关闭颜色");
+        System.out.println("  --color           强制彩色输出（默认自动检测）");
+        System.out.println("  --no-color        关闭颜色（也可设置 NO_COLOR 环境变量）");
         System.out.println("  --version         显示更新器版本");
         System.out.println("  --help            显示帮助");
     }

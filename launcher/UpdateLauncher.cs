@@ -6,12 +6,52 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
 internal static class UpdateLauncher
 {
     private const string JarResource = "update.jar";
+
+    private const int StdOutputHandle = -11;
+    private const uint EnableVirtualTerminalProcessing = 0x0004;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+
+    /// <summary>给当前控制台打开 ANSI/VT 转义支持；成功返回 true。</summary>
+    private static bool EnableAnsiOnConsole()
+    {
+        try
+        {
+            IntPtr handle = GetStdHandle(StdOutputHandle);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+            {
+                return false;
+            }
+            uint mode;
+            if (!GetConsoleMode(handle, out mode))
+            {
+                return false;
+            }
+            if ((mode & EnableVirtualTerminalProcessing) != 0)
+            {
+                return true;
+            }
+            return SetConsoleMode(handle, mode | EnableVirtualTerminalProcessing);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     private static int Main(string[] args)
     {
@@ -32,11 +72,16 @@ internal static class UpdateLauncher
                 return 3;
             }
             string jar = ExtractJar();
+            bool ansi = EnableAnsiOnConsole();
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = java;
             startInfo.Arguments = "-jar \"" + jar + "\"" + QuoteArgs(args);
             startInfo.WorkingDirectory = client;
             startInfo.UseShellExecute = false;
+            if (ansi)
+            {
+                startInfo.EnvironmentVariables["SPC_UPDATER_ANSI"] = "1";
+            }
             Process process = Process.Start(startInfo);
             process.WaitForExit();
             return process.ExitCode;
