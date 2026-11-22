@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
@@ -16,8 +15,6 @@ public final class Main {
     private static final int MAX_STAT_LINES = 20;
     private static final int MAX_CHANGES_SHOWN = 15;
     private static final int MAX_RELEASE_BODY_LINES = 12;
-
-    private static String[] launchArgs = new String[0];
 
     private final Path client;
     private final PclConfig pcl;
@@ -56,7 +53,6 @@ public final class Main {
                 }
             }
         }
-        launchArgs = Arrays.copyOf(args, args.length);
         Ui.init(wantColor, forceColor);
         new Main(resolveClient(clientArg)).run();
     }
@@ -453,19 +449,6 @@ public final class Main {
         Ui.println("  当前提交：" + Git.shortHash(client, "HEAD") + "  " + Ui.gray(Git.subject(client, "HEAD")));
         Ui.println("  配置文件已重新回锁（只读）。");
         Ui.println();
-        if (!canRestartUpdater()) {
-            Ui.pause("按 Enter 返回主菜单...");
-            return false;
-        }
-        Ui.println("  正在自动重启更新器...");
-        try {
-            Thread.sleep(800);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        if (restartUpdater()) {
-            return true;
-        }
         Ui.pause("按 Enter 返回主菜单...");
         return false;
     }
@@ -617,8 +600,7 @@ public final class Main {
                     exe.toString(),
                     String.valueOf(launcherPid()));
             builder.directory(exe.getParent().toFile());
-            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            builder.inheritIO();
             builder.start();
         } catch (Exception e) {
             Ui.println("  " + Ui.red("启动替换进程失败：" + e.getMessage()));
@@ -651,26 +633,6 @@ public final class Main {
         return helper;
     }
 
-    private boolean canRestartUpdater() {
-        String exe = System.getenv("SPC_UPDATER_EXE");
-        return exe != null && !exe.isBlank();
-    }
-
-    /** 重新拉起更新器（保留原始启动参数）。 */
-    private boolean restartUpdater() {
-        try {
-            List<String> command = new ArrayList<>();
-            command.add(System.getenv("SPC_UPDATER_EXE"));
-            command.addAll(Arrays.asList(launchArgs));
-            ProcessBuilder builder = new ProcessBuilder(command);
-            builder.directory(client.toFile());
-            builder.start();
-            return true;
-        } catch (Exception e) {
-            Ui.println("  " + Ui.red("重启失败：" + e.getMessage()));
-            return false;
-        }
-    }
     /** 当前 update.exe 的路径（由启动器通过 SPC_UPDATER_EXE 传入）。 */
     private Path currentExePath() {
         String fromEnv = System.getenv("SPC_UPDATER_EXE");

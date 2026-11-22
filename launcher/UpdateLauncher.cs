@@ -132,10 +132,15 @@ internal static class UpdateLauncher
                 ClearConsoleBuffer();
                 return 0;
             }
-            if (args != null && args.Length >= 3
+            if (args != null && args.Length >= 4
                 && string.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
             {
-                return ApplyUpdate(args[1], args[2], args.Length >= 4 ? args[3] : null);
+                if (!File.Exists(args[1]))
+                {
+                    Console.Error.WriteLine("[SweetPotatoClient-Updater] 待替换文件不存在：" + args[1]);
+                    return 2;
+                }
+                return ApplyUpdate(args[1], args[2], args[3]);
             }
             string exePath = Process.GetCurrentProcess().MainModule.FileName;
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
@@ -335,17 +340,10 @@ internal static class UpdateLauncher
         }
         try
         {
+            // 始终继承当前控制台：新版本会接在原窗口里运行，不会另开窗口也不会“看起来没起来”
             ProcessStartInfo startInfo = new ProcessStartInfo(targetPath);
-            if (Console.IsOutputRedirected)
-            {
-                // 自动化/重定向场景：继承当前 stdio，避免弹出新控制台
-                startInfo.UseShellExecute = false;
-                startInfo.WorkingDirectory = Path.GetDirectoryName(targetPath);
-            }
-            else
-            {
-                startInfo.UseShellExecute = true;
-            }
+            startInfo.UseShellExecute = false;
+            startInfo.WorkingDirectory = Path.GetDirectoryName(targetPath);
             Process.Start(startInfo);
         }
         catch (Exception)
