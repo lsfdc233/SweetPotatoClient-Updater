@@ -15,6 +15,106 @@ import java.util.concurrent.TimeUnit;
 /** git 命令封装。所有输出按 UTF-8 读取（git 输出即 UTF-8）。 */
 public final class Git {
 
+    private static volatile boolean gitReady;
+    private static volatile boolean gitFailed;
+    private static volatile String gitExecutable = "git";
+    private static volatile String gitDisplayPath = "";
+
+    public static boolean ready() {
+        return gitReady;
+    }
+
+    public static String displayPath() {
+        return gitDisplayPath;
+    }
+
+    /** 实际使用的 git 命令：系统 PATH 里的 git，或内置 MinGit 的绝对路径。 */
+    public static String executable() {
+        return gitExecutable;
+    }
+
+    /** 后台等待启动器写出 Git 就绪状态（系统 Git 或已释放的 MinGit）。 */
+    public static void startReadyMonitor() {
+        if (gitReady) {
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            Result probe = run(Path.of("."), "--version");
+            if (probe.ok() && probe.first().startsWith("git version")) {
+                gitExecutable = "git";
+                gitDisplayPath = "系统 PATH";
+                gitReady = true;
+                return;
+            }
+            Path status = statusFile();
+            long deadline = System.currentTimeMillis() + 180_000L;
+            while (System.currentTimeMillis() < deadline) {
+                if (gitReady || gitFailed) {
+                    return;
+                }
+                try {
+                    if (Files.isRegularFile(status)) {
+                        String line = Files.readString(status).trim();
+                        if (line.startsWith("system|")) {
+                            gitExecutable = "git";
+                            gitDisplayPath = "系统 PATH";
+                            gitReady = true;
+                            return;
+                        }
+                        if (line.startsWith("bundled|")) {
+                            gitExecutable = line.substring("bundled|".length()).trim();
+                            gitDisplayPath = gitExecutable;
+                            gitReady = true;
+                            return;
+                        }
+                        if (line.startsWith("failed|")) {
+                            gitFailed = true;
+                            return;
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // 状态文件尚未写完
+                }
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            gitFailed = true;
+        }, "spc-git-ready");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    public static boolean awaitReady(long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            if (gitReady) {
+                return true;
+            }
+            if (gitFailed) {
+                return false;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return gitReady;
+    }
+
+    public static Path statusFile() {
+        String base = System.getenv("LOCALAPPDATA");
+        if (base == null || base.isBlank()) {
+            base = System.getProperty("java.io.tmpdir");
+        }
+        return Path.of(base, "SweetPotatoClient-Updater", "git-status.txt");
+    }
+
     public record Result(int code, List<String> lines) {
         public boolean ok() {
             return code == 0;
@@ -34,7 +134,7 @@ public final class Git {
 
     public static Result run(Path dir, String... args) {
         List<String> command = new ArrayList<>();
-        command.add("git");
+        command.add(executable());
         command.addAll(Arrays.asList(args));
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(dir.toFile());
@@ -64,7 +164,7 @@ public final class Git {
     /** 带超时的运行：超时后强制结束进程，避免网络卡住界面。 */
     public static Result runTimed(Path dir, long timeoutSeconds, String... args) {
         List<String> command = new ArrayList<>();
-        command.add("git");
+        command.add(executable());
         command.addAll(Arrays.asList(args));
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(dir.toFile());

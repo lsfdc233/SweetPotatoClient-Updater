@@ -1,3 +1,4 @@
+import java.net.URI
 plugins {
     id("java")
 }
@@ -106,10 +107,25 @@ val cscExecutable: String = run {
  * 构建单文件 update.exe，直接输出到客户端根目录；
  * 同时复制一份带版本号的副本到 dist/，方便作为 Release 附件上传。
  */
+val minGitZip = layout.projectDirectory.file("launcher/MinGit-64-bit.zip").asFile
+
+tasks.register("prepareMinGit") {
+    group = "distribution"
+    description = "准备内置 MinGit（缺失时下载）"
+    outputs.file(minGitZip)
+    doLast {
+        if (!minGitZip.isFile) {
+            logger.lifecycle("下载 MinGit 到 ${minGitZip.absolutePath}")
+            minGitZip.parentFile.mkdirs()
+            val url = URI("https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/MinGit-2.56.1-64-bit.zip").toURL()
+            url.openStream().use { input -> minGitZip.outputStream().use { output -> input.copyTo(output) } }
+        }
+    }
+}
 tasks.register<Exec>("buildExe") {
     group = "distribution"
     description = "生成单文件 update.exe 到 SweetPotatoClient 根目录"
-    dependsOn(tasks.jar, "runtimeZip")
+    dependsOn(tasks.jar, "runtimeZip", "prepareMinGit")
     val jarFile = layout.buildDirectory.file("libs/SweetPotatoClient-Updater-${project.version}.jar").get().asFile
     val runtimeZipFile = layout.buildDirectory.file("runtime-zip/runtime.zip").get().asFile
     val launcherSource = layout.projectDirectory.file("launcher/UpdateLauncher.cs").asFile
@@ -125,6 +141,7 @@ tasks.register<Exec>("buildExe") {
     inputs.file(jarFile)
     inputs.file(launcherSource)
     inputs.file(runtimeZipFile)
+    inputs.file(minGitZip)
     outputs.file(outExe)
     outputs.file(releaseCopy)
 
@@ -157,6 +174,7 @@ tasks.register<Exec>("buildExe") {
         "/out:${outExe.absolutePath}",
         "/resource:${jarFile.absolutePath},update.jar",
         "/resource:${runtimeZipFile.absolutePath},runtime.zip",
+        "/resource:${minGitZip.absolutePath},mingit.zip",
         "/reference:System.IO.Compression.dll",
         "/reference:System.IO.Compression.FileSystem.dll",
 

@@ -98,6 +98,7 @@ public final class Main {
 
     /** 启动流程：艺术字 → 检查客户端文件 → 解析路径 → 清屏进入主菜单。 */
     private void startInteractive() {
+        Git.startReadyMonitor();
         Ui.clear();
         Ui.banner();
         Ui.println("  made by " + UpdaterInfo.AUTHOR);
@@ -235,6 +236,13 @@ public final class Main {
             }
         } catch (Exception ignored) {
             // 目录不可读时交给 git clone 报错
+        }
+        if (!Git.ready()) {
+            Ui.println("  等待 Git 就绪......");
+            if (!Git.awaitReady(180_000L)) {
+                Ui.println(Ui.red("  Git 未就绪，无法克隆客户端。"));
+                return null;
+            }
         }
         Ui.println("  正在克隆客户端到：" + Ui.gray(dir.toString()));
         try {
@@ -400,7 +408,11 @@ public final class Main {
 
     private void run() {
         if (!Git.available()) {
-            Ui.println(Ui.red("  未找到 git，请先安装 Git for Windows 并加入 PATH。"));
+            Ui.println("  等待 Git 就绪......");
+            Git.awaitReady(180_000L);
+        }
+        if (!Git.available()) {
+            Ui.println(Ui.red("  Git 未就绪（内置 MinGit 释放失败）。"));
             Ui.pause("按 Enter 退出...");
             return;
         }
@@ -531,7 +543,10 @@ public final class Main {
         Ui.println(Ui.gray("  made by " + UpdaterInfo.AUTHOR));
         Ui.println();
         boolean newer = hasNewerUpdater();
-        Ui.println("  更新器版本：" + Ui.cyan(UpdaterInfo.VERSION));
+        String gitState = Git.ready()
+                ? Ui.green("（Git已就绪 路径：" + Git.displayPath() + "）")
+                : Ui.yellow("（等待Git就绪...）");
+        Ui.println("  更新器版本：" + Ui.cyan(UpdaterInfo.VERSION) + " " + gitState);
         Ui.println("  云端版本：" + (newer ? Ui.yellow(cloudVersionText() + "（有新版本）") : Ui.gray(cloudVersionText())));
         Ui.println("  更新器仓库：" + Ui.gray(UpdaterInfo.UPDATER_REPO));
         Ui.println("  客户端仓库：" + Ui.gray(UpdaterInfo.CLIENT_REPO));
@@ -573,6 +588,14 @@ public final class Main {
 
     private boolean updateClient() {
         Ui.title("更新 SweetPotatoClient");
+        if (!Git.ready()) {
+            Ui.println("  等待 Git 就绪......");
+            if (!Git.awaitReady(60_000L)) {
+                Ui.println(Ui.red("  Git 未就绪，无法更新客户端。"));
+                returnHome();
+                return false;
+            }
+        }
         Ui.println("  正在从上游获取最新信息...");
         Git.Result fetch = Git.run(client, "fetch", "--prune");
         if (!fetch.ok()) {

@@ -171,6 +171,21 @@ internal static class UpdateLauncher
                 return 3;
             }
             ShowConsoleIfHidden(consoleHidden);
+            string gitBase = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SweetPotatoClient-Updater");
+            try
+            {
+                Directory.CreateDirectory(gitBase);
+                File.Delete(Path.Combine(gitBase, "git-status.txt"));
+            }
+            catch (Exception)
+            {
+                // 忽略状态文件清理失败
+            }
+            Thread gitThread = new Thread(() => PrepareGit(gitBase));
+            gitThread.IsBackground = true;
+            gitThread.Start();
             string workingDir = exeDir;
             string jar = ExtractJar();
             bool ansi = EnableAnsiOnConsole();
@@ -335,6 +350,87 @@ internal static class UpdateLauncher
         if (window != IntPtr.Zero)
         {
             ShowWindow(window, SwShow);
+        }
+    }
+    /// <summary>检查系统 Git；没有就把内置 MinGit 释放到 %LOCALAPPDATA%，并写状态文件。</summary>
+    private static void PrepareGit(string baseDir)
+    {
+        string statusFile = Path.Combine(baseDir, "git-status.txt");
+        try
+        {
+            if (FindSystemGit())
+            {
+                File.WriteAllText(statusFile, "system|系统 PATH");
+                return;
+            }
+            string gitDir = Path.Combine(baseDir, "git");
+            string gitExe = Path.Combine(gitDir, "cmd", "git.exe");
+            if (!File.Exists(gitExe))
+            {
+                using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("mingit.zip"))
+                {
+                    if (stream == null)
+                    {
+                        File.WriteAllText(statusFile, "failed|内置 MinGit 资源缺失");
+                        return;
+                    }
+                    string zip = Path.Combine(baseDir, "mingit.zip.tmp");
+                    using (FileStream output = File.Create(zip))
+                    {
+                        stream.CopyTo(output);
+                    }
+                    if (Directory.Exists(gitDir))
+                    {
+                        Directory.Delete(gitDir, true);
+                    }
+                    ZipFile.ExtractToDirectory(zip, gitDir);
+                    File.Delete(zip);
+                }
+            }
+            File.WriteAllText(statusFile, File.Exists(gitExe) ? "bundled|" + gitExe : "failed|git.exe 不存在");
+        }
+        catch (Exception e)
+        {
+            try
+            {
+                File.WriteAllText(statusFile, "failed|" + e.Message);
+            }
+            catch (Exception)
+            {
+                // 忽略
+            }
+        }
+    }
+
+    private static bool FindSystemGit()
+    {
+        try
+        {
+            ProcessStartInfo info = new ProcessStartInfo("git", "--version");
+            info.UseShellExecute = false;
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
+            info.CreateNoWindow = true;
+            using (Process process = Process.Start(info))
+            {
+                if (!process.WaitForExit(5000))
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (Exception)
+                    {
+                        // 忽略
+                    }
+                    return false;
+                }
+                return process.ExitCode == 0;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
     private static string FindBundledJava(string exeDir)
