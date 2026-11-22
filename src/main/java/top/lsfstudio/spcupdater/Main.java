@@ -32,6 +32,28 @@ public final class Main {
     }
 
     public static void main(String[] args) {
+        if (args.length > 0) {
+            switch (args[0]) {
+                case "--apply-update" -> {
+                    if (args.length >= 4) {
+                        System.exit(Launcher.applyUpdate(args[1], args[2], args[3]));
+                    }
+                    return;
+                }
+                case "--apply-update-pull" -> {
+                    if (args.length >= 5) {
+                        System.exit(Launcher.applyUpdatePull(args[1], args[2], args[3], args[4]));
+                    }
+                    return;
+                }
+                case "--clear-console" -> {
+                    Launcher.clearConsole();
+                    return;
+                }
+                default -> {
+                }
+            }
+        }
         boolean wantColor = true;
         boolean forceColor = false;
         boolean autoYes = false;
@@ -149,7 +171,7 @@ public final class Main {
     }
 
     private static Path envExeDir() {
-        String value = System.getenv("SPC_UPDATER_EXE");
+        String value = Launcher.selfExeEnv();
         if (value == null || value.isBlank()) {
             return null;
         }
@@ -202,11 +224,19 @@ public final class Main {
             Ui.pause("按 Enter 退出...");
             return;
         }
+        Thread ansiThread = new Thread(Launcher::enableAnsi, "spc-ansi");
+        ansiThread.setDaemon(true);
+        ansiThread.start();
         Git.ensureIdentity(client);
         startCloudCheck();
         startGitFetch();
         awaitCloudCheck(Duration.ofSeconds(6));
         awaitFetchReady(Duration.ofSeconds(3));
+        try {
+            ansiThread.join(2500);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         while (true) {
             drawMenu();
             String choice = Ui.readLine("请选择 [1-5]");
@@ -587,7 +617,7 @@ public final class Main {
             returnHome();
             return false;
         }
-        String exeEnv = System.getenv("SPC_UPDATER_EXE");
+        String exeEnv = Launcher.selfExeEnv();
         if (exeEnv == null || exeEnv.isBlank()) {
             Ui.println("  " + Ui.red("自更新需要由 update.exe 启动（当前不是）。"));
             returnHome();
@@ -696,7 +726,7 @@ public final class Main {
 
     /** 把正在运行的 update.exe 改名成 update.exe.old，让出路径给 git pull。 */
     private Path renameRunningUpdater() {
-        String env = System.getenv("SPC_UPDATER_EXE");
+        String env = Launcher.selfExeEnv();
         if (env == null || env.isBlank()) {
             return null;
         }
@@ -742,7 +772,7 @@ public final class Main {
         if (!Files.isRegularFile(canonical)) {
             return;
         }
-        String env = System.getenv("SPC_UPDATER_EXE");
+        String env = Launcher.selfExeEnv();
         if (env != null && !env.isBlank()) {
             try {
                 if (Files.isSameFile(Path.of(env).toAbsolutePath(), canonical)) {
@@ -762,7 +792,7 @@ public final class Main {
         }
     }
     private String updaterRelativePath() {
-        String env = System.getenv("SPC_UPDATER_EXE");
+        String env = Launcher.selfExeEnv();
         if (env == null || env.isBlank()) {
             return null;
         }
@@ -775,7 +805,7 @@ public final class Main {
 
     /** 更新内容包含更新器本身：导出新 exe，退出后由助手执行 pull + 热替换 + 重启。 */
     private boolean startUpdaterSelfUpdate(String upstream, String updaterRel) {
-        String env = System.getenv("SPC_UPDATER_EXE");
+        String env = Launcher.selfExeEnv();
         if (env == null || env.isBlank()) {
             Ui.println("  " + Ui.red("无法定位当前 update.exe，请通过 update.exe 启动。"));
             returnHome();
@@ -811,7 +841,7 @@ public final class Main {
     }
     /** 当前 update.exe 的路径（由启动器通过 SPC_UPDATER_EXE 传入）。 */
     private Path currentExePath() {
-        String fromEnv = System.getenv("SPC_UPDATER_EXE");
+        String fromEnv = Launcher.selfExeEnv();
         if (fromEnv != null && !fromEnv.isBlank()) {
             return Path.of(fromEnv).toAbsolutePath();
         }
@@ -819,11 +849,14 @@ public final class Main {
         return Files.isRegularFile(candidate) ? candidate.toAbsolutePath() : null;
     }
 
-    /** 启动器进程 PID；直接用 java -jar 运行时为 0（不需要等待旧启动器）。 */
+    /** 需要等待退出的进程：原生 exe 模式等当前进程；旧启动器模式等父进程。 */
     private static long launcherPid() {
-        String fromEnv = System.getenv("SPC_UPDATER_EXE");
+        String fromEnv = Launcher.selfExeEnv();
         if (fromEnv == null || fromEnv.isBlank()) {
             return 0L;
+        }
+        if (System.getenv("SPC_UPDATER_EXE") == null) {
+            return ProcessHandle.current().pid();
         }
         return ProcessHandle.current().parent().map(ProcessHandle::pid).orElse(0L);
     }

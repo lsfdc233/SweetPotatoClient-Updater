@@ -58,58 +58,6 @@ tasks.register("bumpVersion") {
     }
 }
 
-/** 用 jlink 生成精简 Java 运行时，打进 update.exe。 */
-val jlinkExecutable: String = run {
-    val candidate = File(System.getProperty("java.home"), "bin/jlink.exe")
-    if (candidate.isFile) candidate.absolutePath else "jlink"
-}
-val embeddedRuntimeDir = layout.buildDirectory.dir("runtime")
-
-tasks.register<Exec>("embeddedRuntime") {
-    group = "distribution"
-    description = "用 jlink 生成内置 Java 运行时"
-    val out = embeddedRuntimeDir.get().asFile
-    outputs.dir(out)
-    doFirst {
-        delete(out)
-        out.parentFile.mkdirs()
-    }
-    commandLine(
-        jlinkExecutable,
-        "--add-modules", "java.base,java.net.http,java.logging,jdk.crypto.ec,jdk.charsets",
-        "--strip-debug", "--no-header-files", "--no-man-pages", "--compress=zip-6",
-        "--output", out.absolutePath
-    )
-}
-
-/** 把运行时复制到 dist/update-runtime（随 exe 一起分发，不在运行时解压）。 */
-val prepareDistRuntime = tasks.register<Sync>("prepareDistRuntime") {
-    group = "distribution"
-    description = "把 jlink 运行时同步到 dist/update-runtime"
-    dependsOn("embeddedRuntime")
-    from(embeddedRuntimeDir)
-    into(layout.projectDirectory.dir("dist/update-runtime"))
-}
-
-/** 打包 exe + update-runtime 的发布 zip。 */
-tasks.register<Zip>("packageZip") {
-    group = "distribution"
-    description = "生成 dist/update-<版本>.zip（update.exe + update-runtime）"
-    dependsOn("buildExe", "prepareDistRuntime")
-    val exeName = "update-${updaterVersion}.exe"
-    from(layout.projectDirectory.file("dist/$exeName")) {
-        rename { "update.exe" }
-    }
-    from(layout.projectDirectory.dir("dist/update-runtime")) {
-        into("update-runtime")
-    }
-    archiveFileName.set("update-${updaterVersion}.zip")
-    destinationDirectory.set(layout.projectDirectory.dir("dist"))
-}
-
-tasks.named("assemble") {
-    dependsOn("packageZip")
-}
 /** 客户端根目录（本仓库的上一级）。 */
 val clientRoot = layout.projectDirectory.dir("..")
 

@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using Microsoft.Win32;
+using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -151,10 +153,19 @@ internal static class UpdateLauncher
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
             CleanupStaleUpdate(exeDir);
             string client = FindClientRoot(exeDir);
-            string java = FindJava(client, exeDir);
+            string java = FindBundledJava(exeDir);
+            if (java == null && client != null)
+            {
+                java = FindClientJava(client);
+            }
             if (java == null)
             {
-                Fail("找不到 Java 运行时（内置运行时解压失败，客户端目录也没有 jdk-*/bin/java.exe）。");
+                java = FindSystemJava();
+            }
+            if (java == null)
+            {
+                OpenJdkDownloadPage();
+                Fail("没有找到可用的 Java 21+ 运行时，已打开 JDK 下载页面；安装后重新运行 update.exe。");
                 return 3;
             }
             string workingDir = client != null ? client : exeDir;
@@ -233,36 +244,39 @@ internal static class UpdateLauncher
         return null;
     }
 
-    private static string FindJava(string client, string exeDir)
+    private static string FindBundledJava(string exeDir)
     {
         string bundled = Path.Combine(exeDir, "update-runtime", "bin", "java.exe");
-        if (File.Exists(bundled))
-        {
-            return bundled;
-        }
-        if (client == null)
-        {
-            return null;
-        }
+        return File.Exists(bundled) && IsUsableJava(bundled) ? bundled : null;
+    }
+
+    private static string FindClientJava(string client)
+    {
         string preferred = Path.Combine(client, "jdk-25.0.5.0.3", "bin", "java.exe");
-        if (File.Exists(preferred))
+        if (File.Exists(preferred) && IsUsableJava(preferred))
         {
             return preferred;
         }
         List<string> candidates = new List<string>();
-        string[] dirs = Directory.GetDirectories(client, "jdk*");
-        foreach (string dir in dirs)
+        try
         {
-            string name = Path.GetFileName(dir);
-            if (name.EndsWith("-full") || name.EndsWith("-min") || name.EndsWith("-old"))
+            foreach (string dir in Directory.GetDirectories(client, "jdk*"))
             {
-                continue;
+                string name = Path.GetFileName(dir);
+                if (name.EndsWith("-full") || name.EndsWith("-min") || name.EndsWith("-old"))
+                {
+                    continue;
+                }
+                string java = Path.Combine(dir, "bin", "java.exe");
+                if (File.Exists(java) && IsUsableJava(java))
+                {
+                    candidates.Add(java);
+                }
             }
-            string java = Path.Combine(dir, "bin", "java.exe");
-            if (File.Exists(java))
-            {
-                candidates.Add(java);
-            }
+        }
+        catch (Exception)
+        {
+            // 忽略目录读取失败
         }
         candidates.Sort(delegate(string a, string b)
         {
@@ -272,6 +286,218 @@ internal static class UpdateLauncher
         return candidates.Count > 0 ? candidates[0] : null;
     }
 
+    private static string FindSystemJava()
+    {
+        // 1) 显式指定：SPC_JAVA（java.exe 或 Java 根目录）
+        string fromEnv = Environment.GetEnvironmentVariable("SPC_JAVA");
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+        {
+            string path = Path.HasExtension(fromEnv) && fromEnv.EndsWith("java.exe", StringComparison.OrdinalIgnoreCase)
+                    ? fromEnv
+                    : Path.Combine(fromEnv, "bin", "java.exe");
+            if (File.Exists(path) && IsUsableJava(path))
+            {
+                return path;
+            }
+        }
+        // 2) JAVA_HOME
+        string javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrWhiteSpace(javaHome))
+        {
+            string path = Path.Combine(javaHome, "bin", "java.exe");
+            if (File.Exists(path) && IsUsableJava(path))
+            {
+                return path;
+            }
+        }
+        // 3) PATH
+        string pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrEmpty(pathEnv))
+        {
+            foreach (string dir in pathEnv.Split(Path.PathSeparator))
+            {
+                if (string.IsNullOrWhiteSpace(dir))
+                {
+                    continue;
+                }
+                try
+                {
+                    string path = Path.Combine(dir.Trim(), "java.exe");
+                    if (File.Exists(path) && IsUsableJava(path))
+                    {
+                        return path;
+                    }
+                }
+                catch (Exception)
+                {
+                    // 非法 PATH 项
+                }
+            }
+        }
+        // 4) 注册表（JavaSoft / 各发行版）
+        foreach (string home in RegistryJavaHomes())
+        {
+            string path = Path.Combine(home, "bin", "java.exe");
+            if (File.Exists(path) && IsUsableJava(path))
+            {
+                return path;
+            }
+        }
+        // 5) 常见安装目录
+        foreach (string root in JavaRoots())
+        {
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+            try
+            {
+                foreach (string dir in Directory.GetDirectories(root))
+                {
+                    string path = Path.Combine(dir, "bin", "java.exe");
+                    if (File.Exists(path) && IsUsableJava(path))
+                    {
+                        return path;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // 忽略
+            }
+        }
+        return null;
+    }
+
+    private static IEnumerable<string> RegistryJavaHomes()
+    {
+        List<string> homes = new List<string>();
+        string[] roots = {
+            @"SOFTWARE\JavaSoft\Java Development Kit",
+            @"SOFTWARE\JavaSoft\Java Runtime Environment",
+            @"SOFTWARE\Eclipse Adoptium\JDK",
+            @"SOFTWARE\Eclipse Foundation\JDK",
+            @"SOFTWARE\Microsoft\JDK",
+            @"SOFTWARE\Azul Systems\Zulu",
+            @"SOFTWARE\Amazon Corretto",
+            @"SOFTWARE\BellSoft\LibericaJDK"
+        };
+        RegistryKey[] bases = {
+            Registry.LocalMachine,
+            Registry.CurrentUser,
+            Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node", false)
+        };
+        foreach (RegistryKey baseKey in bases)
+        {
+            if (baseKey == null)
+            {
+                continue;
+            }
+            foreach (string root in roots)
+            {
+                try
+                {
+                    using (RegistryKey key = baseKey.OpenSubKey(root))
+                    {
+                        if (key == null)
+                        {
+                            continue;
+                        }
+                        foreach (string sub in key.GetSubKeyNames())
+                        {
+                            using (RegistryKey version = key.OpenSubKey(sub))
+                            {
+                                object value = version == null ? null : version.GetValue("JavaHome");
+                                if (value != null)
+                                {
+                                    homes.Add(value.ToString());
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // 忽略注册表访问失败
+                }
+            }
+        }
+        return homes;
+    }
+
+    private static IEnumerable<string> JavaRoots()
+    {
+        List<string> roots = new List<string>();
+        string[] bases = {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+        };
+        string[] names = { "Java", "Eclipse Adoptium", "Eclipse Foundation", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft" };
+        foreach (string b in bases)
+        {
+            if (string.IsNullOrEmpty(b))
+            {
+                continue;
+            }
+            foreach (string n in names)
+            {
+                roots.Add(Path.Combine(b, n));
+            }
+            roots.Add(Path.Combine(b, "Programs", "Eclipse Adoptium"));
+            roots.Add(Path.Combine(b, "Programs", "Microsoft"));
+        }
+        return roots;
+    }
+
+    private static bool IsUsableJava(string javaPath)
+    {
+        try
+        {
+            ProcessStartInfo info = new ProcessStartInfo(javaPath, "-version");
+            info.UseShellExecute = false;
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
+            info.CreateNoWindow = true;
+            using (Process process = Process.Start(info))
+            {
+                string text = process.StandardError.ReadToEnd() + process.StandardOutput.ReadToEnd();
+                if (!process.WaitForExit(5000))
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (Exception)
+                    {
+                        // 忽略
+                    }
+                    return false;
+                }
+                Match match = Regex.Match(text, "version \"(\\d+)");
+                return match.Success && int.Parse(match.Groups[1].Value) >= 21;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void OpenJdkDownloadPage()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://adoptium.net/temurin/releases/?version=21&os=windows&arch=x64&package=jdk")
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception)
+        {
+            // 打开浏览器失败时仅提示
+        }
+    }
     private static string ExtractJar()
     {
         Assembly assembly = Assembly.GetExecutingAssembly();

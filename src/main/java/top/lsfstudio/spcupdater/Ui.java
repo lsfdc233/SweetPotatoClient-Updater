@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 /** 控制台界面：颜色、ASCII 横幅、输入。 */
 public final class Ui {
     private static final String ESC = "\u001b[";
-    private static final PrintStream OUT = System.out;
+    private static PrintStream OUT = System.out;
 
     private static final String[] BANNER = {
             "  ____ __        __ _____  _____  _____  ____    ___  _____   _   _____  ___",
@@ -30,6 +30,16 @@ public final class Ui {
     }
 
     public static void init(boolean wantColor, boolean forceColor) {
+        if (Launcher.isWindows()) {
+            try {
+                java.nio.charset.Charset charset = Launcher.consoleCharset();
+                OUT = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, charset);
+                System.setOut(OUT);
+                System.setErr(new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, charset));
+            } catch (Exception ignored) {
+                OUT = System.out;
+            }
+        }
         reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         if (!wantColor) {
             color = false;
@@ -40,15 +50,11 @@ public final class Ui {
             color = true;
             return;
         }
+        // 原生 exe 模式下 System.console() 可能为 null，默认按支持 ANSI 处理；
+        // 通过 --no-color / NO_COLOR 关闭。
         boolean launcherAnsi = "1".equals(System.getenv("SPC_UPDATER_ANSI"));
-        boolean console = System.console() != null;
-        boolean ansi = launcherAnsi
-                || System.getenv("WT_SESSION") != null
-                || System.getenv("TERM_PROGRAM") != null
-                || System.getenv("ANSICON") != null
-                || System.getenv("TERM") != null;
         boolean noColorEnv = System.getenv("NO_COLOR") != null;
-        color = ansi && !noColorEnv && (console || launcherAnsi);
+        color = wantColor && !noColorEnv || (forceColor && wantColor);
     }
 
     public static boolean colorEnabled() {
@@ -69,35 +75,7 @@ public final class Ui {
 
     public static void clear() {
         OUT.flush();
-        if (clearWithHelper()) {
-            return;
-        }
-        if (color) {
-            // 3J 连回滚缓冲一起清掉（部分旧终端不支持，所以优先走上面的 Win32 helper）
-            OUT.print(ESC + "3J" + ESC + "2J" + ESC + "H");
-            OUT.flush();
-        } else {
-            for (int i = 0; i < 60; i++) {
-                OUT.println();
-            }
-        }
-    }
-
-    /**
-     * Windows 下让 update.exe --clear-console 用 Win32 API 清空整个控制台缓冲区（含回滚区），
-     * 比 ANSI 3J 在 conhost 等旧终端上更可靠。
-     */
-    private static boolean clearWithHelper() {
-        String exe = System.getenv("SPC_UPDATER_EXE");
-        if (exe == null || exe.isBlank()) {
-            return false;
-        }
-        try {
-            Process process = new ProcessBuilder(exe, "--clear-console").inheritIO().start();
-            return process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception e) {
-            return false;
-        }
+        Launcher.clearConsole();
     }
 
     public static void banner() {
