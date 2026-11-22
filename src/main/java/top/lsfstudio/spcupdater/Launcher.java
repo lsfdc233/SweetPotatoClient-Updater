@@ -34,82 +34,39 @@ public final class Launcher {
         return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
-    /** 经 PowerShell 调用 Win32 SetConsoleMode，给当前控制台打开 VT 转义（颜色/清屏）。 */
-    public static void enableAnsi() {
-        if (!isWindows()) {
-            return;
-        }
-        String script = String.join("\n",
-                "$k = Add-Type -MemberDefinition @'",
-                "[DllImport(\"kernel32.dll\")] public static extern IntPtr GetStdHandle(int n);",
-                "[DllImport(\"kernel32.dll\")] public static extern bool GetConsoleMode(IntPtr h, out uint m);",
-                "[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleMode(IntPtr h, uint m);",
-                "'@ -Name K -PassThru",
-                "$h = $k::GetStdHandle(-11)",
-                "$m = 0",
-                "[void]$k::GetConsoleMode($h, [ref]$m)",
-                "[void]$k::SetConsoleMode($h, $m -bor 4)");
-        try {
-            Path scriptFile = Path.of(System.getProperty("java.io.tmpdir"),
-                    "sweetpotato-updater-enable-ansi-" + ProcessHandle.current().pid() + ".ps1");
-            Files.writeString(scriptFile, script);
-            ProcessBuilder builder = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", scriptFile.toString());
-            builder.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-            builder.redirectError(ProcessBuilder.Redirect.INHERIT);
-            Process process = builder.start();
-            process.waitFor(5, TimeUnit.SECONDS);
-            Files.deleteIfExists(scriptFile);
-        } catch (Exception ignored) {
-            // 非控制台/无 PowerShell：忽略
-        }
-    }
 
-    /** 当前控制台代码页对应的字符集（Windows 控制台默认不是 UTF-8）。 */
+    /** 启动器已经用 Win32 SetConsoleMode 打开 VT；这里无需再起进程。 */
+    public static void enableAnsi() {
+        // no-op：避免每次启动拉起 powershell/cmd 触发杀软告警
+    }
+    /** 直接读 JVM 的控制台编码属性，不启动 cmd/chcp。 */
     public static Charset consoleCharset() {
         if (!isWindows()) {
             return Charset.defaultCharset();
         }
-        try {
-            Process process = new ProcessBuilder("cmd.exe", "/c", "chcp").redirectErrorStream(true).start();
-            byte[] bytes = process.getInputStream().readAllBytes();
-            process.waitFor(3, TimeUnit.SECONDS);
-            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{3,5})")
-                    .matcher(new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1));
-            if (matcher.find()) {
-                int codePage = Integer.parseInt(matcher.group(1));
-                return switch (codePage) {
-                    case 65001 -> java.nio.charset.StandardCharsets.UTF_8;
-                    case 54936 -> Charset.forName("GB18030");
-                    default -> Charset.forName("GBK");
-                };
-            }
-        } catch (Exception ignored) {
-            // 回退 GBK
+        String encoding = System.getProperty("stdout.encoding");
+        if (encoding == null || encoding.isBlank()) {
+            encoding = System.getProperty("native.encoding");
         }
-        return Charset.forName("GBK");
+        if (encoding != null && !encoding.isBlank()) {
+            try {
+                return Charset.forName(encoding);
+            } catch (Exception ignored) {
+                // 回退 GBK
+            }
+        }
+        try {
+            return Charset.forName("GBK");
+        } catch (Exception ignored) {
+            return Charset.defaultCharset();
+        }
     }
 
-    /** 清屏：Windows 下用 cls（含回滚缓冲），其它平台回退 ANSI。 */
+    /** 清屏：直接用 VT 转义（启动器已开启 VT），不启动 cmd/cls。 */
     public static void clearConsole() {
-        if (isWindows()) {
-            try {
-                ProcessBuilder builder = new ProcessBuilder("cmd.exe", "/c", "cls");
-                builder.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-                builder.redirectError(ProcessBuilder.Redirect.INHERIT);
-                Process process = builder.start();
-                if (process.waitFor(3, TimeUnit.SECONDS)) {
-                    return;
-                }
-                process.destroyForcibly();
-            } catch (Exception ignored) {
-                // 回退 ANSI
-            }
-        }
         System.out.print("\u001b[3J\u001b[2J\u001b[H");
         System.out.flush();
     }
-
     /** 等待指定 PID 退出；0/无效则直接返回。 */
     public static void waitForPid(String pidText) {
         long pid;

@@ -423,19 +423,11 @@ public final class Main {
             Ui.pause("按 Enter 退出...");
             return;
         }
-        Thread ansiThread = new Thread(Launcher::enableAnsi, "spc-ansi");
-        ansiThread.setDaemon(true);
-        ansiThread.start();
         Git.ensureIdentity(client);
         startCloudCheck();
         startGitFetch();
         awaitCloudCheck(Duration.ofSeconds(6));
         awaitFetchReady(Duration.ofSeconds(3));
-        try {
-            ansiThread.join(2500);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
         while (true) {
             drawMenu();
             String choice = Ui.readLine("请选择 [1-5]");
