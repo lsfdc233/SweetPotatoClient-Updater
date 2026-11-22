@@ -154,20 +154,23 @@ internal static class UpdateLauncher
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
             bool consoleHidden = HideConsoleIfOwned();
             CleanupStaleUpdate(exeDir);
-            string java = EnsureEmbeddedRuntime();
-            if (java == null)
-            {
-                java = FindBundledJava(exeDir);
-            }
-
+            string java = FindClientEnvJava();
             if (java == null)
             {
                 java = FindSystemJava();
             }
+            if (java != null)
+            {
+                RemoveExtractedRuntime();
+            }
+            if (java == null)
+            {
+                java = EnsureEmbeddedRuntime();
+            }
             if (java == null)
             {
                 ShowConsoleIfHidden(consoleHidden);
-                Fail("内置运行时解压失败，系统里也没有可用的 Java 21+ 运行时。");
+                Fail("没有找到 Java 21+，内置运行时释放也失败。");
                 return 3;
             }
             ShowConsoleIfHidden(consoleHidden);
@@ -431,6 +434,48 @@ internal static class UpdateLauncher
         catch (Exception)
         {
             return false;
+        }
+    }
+    /// <summary>优先用 SweetPotatoClient_PATH 指向的客户端自带 JDK 启动更新器。</summary>
+    private static string FindClientEnvJava()
+    {
+        try
+        {
+            string basePath = Environment.GetEnvironmentVariable("SweetPotatoClient_PATH");
+            if (string.IsNullOrWhiteSpace(basePath))
+            {
+                return null;
+            }
+            string root = basePath.Trim().Trim('"');
+            string preferred = Path.Combine(root, "jdk-25.0.5.0.3", "bin", "java.exe");
+            if (File.Exists(preferred) && IsUsableJava(preferred))
+            {
+                return preferred;
+            }
+            return FindClientJava(root);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>已找到外部 Java 时，删掉以前自解压到 %LOCALAPPDATA% 的运行时。</summary>
+    private static void RemoveExtractedRuntime()
+    {
+        try
+        {
+            string runtime = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SweetPotatoClient-Updater", "runtime");
+            if (Directory.Exists(runtime))
+            {
+                Directory.Delete(runtime, true);
+            }
+        }
+        catch (Exception)
+        {
+            // 仍被占用时忽略，下次启动再删
         }
     }
     private static string FindBundledJava(string exeDir)
