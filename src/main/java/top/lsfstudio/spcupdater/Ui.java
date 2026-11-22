@@ -68,14 +68,35 @@ public final class Ui {
     public static String gray(String text) { return wrap("90", text); }
 
     public static void clear() {
+        OUT.flush();
+        if (clearWithHelper()) {
+            return;
+        }
         if (color) {
-            // 3J 连回滚缓冲一起清掉，避免向上滚动还能看到上一次界面的日志
+            // 3J 连回滚缓冲一起清掉（部分旧终端不支持，所以优先走上面的 Win32 helper）
             OUT.print(ESC + "3J" + ESC + "2J" + ESC + "H");
             OUT.flush();
         } else {
             for (int i = 0; i < 60; i++) {
                 OUT.println();
             }
+        }
+    }
+
+    /**
+     * Windows 下让 update.exe --clear-console 用 Win32 API 清空整个控制台缓冲区（含回滚区），
+     * 比 ANSI 3J 在 conhost 等旧终端上更可靠。
+     */
+    private static boolean clearWithHelper() {
+        String exe = System.getenv("SPC_UPDATER_EXE");
+        if (exe == null || exe.isBlank()) {
+            return false;
+        }
+        try {
+            Process process = new ProcessBuilder(exe, "--clear-console").inheritIO().start();
+            return process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return false;
         }
     }
 

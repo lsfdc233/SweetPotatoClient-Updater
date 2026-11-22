@@ -27,6 +27,73 @@ internal static class UpdateLauncher
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Coordinates
+    {
+        public short X;
+        public short Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SmallRectangle
+    {
+        public short Left;
+        public short Top;
+        public short Right;
+        public short Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ConsoleScreenBufferInfo
+    {
+        public Coordinates Size;
+        public Coordinates CursorPosition;
+        public ushort Attributes;
+        public SmallRectangle Window;
+        public Coordinates MaximumWindowSize;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetConsoleScreenBufferInfo(IntPtr handle, out ConsoleScreenBufferInfo info);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool FillConsoleOutputCharacterW(IntPtr handle, char character, uint length,
+        Coordinates position, out uint written);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FillConsoleOutputAttribute(IntPtr handle, ushort attribute, uint length,
+        Coordinates position, out uint written);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCursorPosition(IntPtr handle, Coordinates position);
+
+    /// <summary>用 Win32 API 清空整个控制台缓冲区（含回滚区），比 ANSI 3J 在旧终端上更可靠。</summary>
+    private static void ClearConsoleBuffer()
+    {
+        try
+        {
+            IntPtr handle = GetStdHandle(StdOutputHandle);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+            {
+                return;
+            }
+            ConsoleScreenBufferInfo info;
+            if (!GetConsoleScreenBufferInfo(handle, out info))
+            {
+                return;
+            }
+            uint cells = (uint)(info.Size.X * info.Size.Y);
+            Coordinates origin = new Coordinates();
+            uint written;
+            FillConsoleOutputCharacterW(handle, ' ', cells, origin, out written);
+            FillConsoleOutputAttribute(handle, info.Attributes, cells, origin, out written);
+            SetConsoleCursorPosition(handle, origin);
+        }
+        catch (Exception)
+        {
+            // 非控制台环境：忽略
+        }
+    }
     /// <summary>给当前控制台打开 ANSI/VT 转义支持；成功返回 true。</summary>
     private static bool EnableAnsiOnConsole()
     {
@@ -59,6 +126,12 @@ internal static class UpdateLauncher
 
         try
         {
+            if (args != null && args.Length >= 1
+                && string.Equals(args[0], "--clear-console", StringComparison.OrdinalIgnoreCase))
+            {
+                ClearConsoleBuffer();
+                return 0;
+            }
             if (args != null && args.Length >= 3
                 && string.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
             {
