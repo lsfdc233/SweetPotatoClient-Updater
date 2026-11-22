@@ -69,10 +69,11 @@ public final class Ui {
 
     public static void clear() {
         if (color) {
-            OUT.print(ESC + "2J" + ESC + "H");
+            // 3J 连回滚缓冲一起清掉，避免向上滚动还能看到上一次界面的日志
+            OUT.print(ESC + "3J" + ESC + "2J" + ESC + "H");
             OUT.flush();
         } else {
-            for (int i = 0; i < 40; i++) {
+            for (int i = 0; i < 60; i++) {
                 OUT.println();
             }
         }

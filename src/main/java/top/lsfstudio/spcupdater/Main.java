@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -14,8 +17,11 @@ public final class Main {
     private static final int MAX_CHANGES_SHOWN = 15;
     private static final int MAX_RELEASE_BODY_LINES = 12;
 
+    private static String[] launchArgs = new String[0];
+
     private final Path client;
     private final PclConfig pcl;
+    private final CountDownLatch cloudReady = new CountDownLatch(1);
 
     private volatile ReleaseClient.Release latestRelease;
     private volatile String latestReleaseError = "";
@@ -48,6 +54,7 @@ public final class Main {
                 }
             }
         }
+        launchArgs = Arrays.copyOf(args, args.length);
         Ui.init(wantColor, forceColor);
         new Main(resolveClient(clientArg)).run();
     }
@@ -179,6 +186,7 @@ public final class Main {
             return;
         }
         startCloudCheck();
+        awaitCloudCheck(Duration.ofSeconds(6));
         while (true) {
             drawMenu();
             String choice = Ui.readLine("请选择 [1-5]");
@@ -186,7 +194,11 @@ public final class Main {
                 return;
             }
             switch (choice.trim()) {
-                case "1" -> updateClient();
+                case "1" -> {
+                    if (updateClient()) {
+                        return;
+                    }
+                }
                 case "2" -> {
                     if (updateUpdater()) {
                         return;
@@ -212,10 +224,21 @@ public final class Main {
                 latestReleaseError = "";
             } catch (Exception e) {
                 latestReleaseError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            } finally {
+                cloudReady.countDown();
             }
         }, "spc-cloud-check");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    /** 首屏绘制前最多等一会儿云端版本，避免一直显示「查询中...」。 */
+    private void awaitCloudCheck(Duration timeout) {
+        try {
+            cloudReady.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private String cloudVersionText() {
@@ -279,7 +302,7 @@ public final class Main {
 
     // ------------------------------------------------------------ 1 更新客户端
 
-    private void updateClient() {
+    private boolean updateClient() {
         Ui.clear();
         Ui.title("更新 SweetPotatoClient");
         Ui.println("  正在从上游获取最新信息...");
@@ -287,7 +310,7 @@ public final class Main {
         if (!fetch.ok()) {
             showOutput(fetch, "获取上游失败（网络或权限问题）：");
             Ui.pause("按 Enter 返回主菜单...");
-            return;
+            return false;
         }
         String upstream = Git.upstream(client);
         int[] aheadBehind = Git.aheadBehind(client, upstream);
@@ -311,7 +334,7 @@ public final class Main {
                 Ui.println("  本地领先上游 " + aheadBehind[0] + " 个提交。");
             }
             Ui.pause("按 Enter 返回主菜单...");
-            return;
+            return false;
         }
         Ui.println("  本地落后上游 " + aheadBehind[1] + " 个提交。");
         List<String> changes = Git.status(client);
@@ -334,7 +357,7 @@ public final class Main {
         if (!Ui.confirm("确认更新？(y/n)")) {
             Ui.println("  已取消。");
             Ui.pause("按 Enter 返回主菜单...");
-            return;
+            return false;
         }
 
         pcl.unlock();
@@ -347,7 +370,7 @@ public final class Main {
                 showOutput(pull, "无法自动判断冲突文件，请手动处理：");
                 pcl.relock();
                 Ui.pause("按 Enter 返回主菜单...");
-                return;
+                return false;
             }
             for (String file : conflicts) {
                 boolean ok = Git.discard(client, file);
@@ -359,7 +382,7 @@ public final class Main {
             showOutput(pull, "更新失败，请手动处理：");
             pcl.relock();
             Ui.pause("按 Enter 返回主菜单...");
-            return;
+            return false;
         }
 
         pcl.relock();
@@ -367,7 +390,22 @@ public final class Main {
         Ui.println("  " + Ui.green("更新完成！"));
         Ui.println("  当前提交：" + Git.shortHash(client, "HEAD") + "  " + Ui.gray(Git.subject(client, "HEAD")));
         Ui.println("  配置文件已重新回锁（只读）。");
+        Ui.println();
+        if (!canRestartUpdater()) {
+            Ui.pause("按 Enter 返回主菜单...");
+            return false;
+        }
+        Ui.println("  正在自动重启更新器...");
+        try {
+            Thread.sleep(800);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (restartUpdater()) {
+            return true;
+        }
         Ui.pause("按 Enter 返回主菜单...");
+        return false;
     }
 
     private void showOutput(Git.Result result, String title) {
@@ -523,6 +561,26 @@ public final class Main {
         return helper;
     }
 
+    private boolean canRestartUpdater() {
+        String exe = System.getenv("SPC_UPDATER_EXE");
+        return exe != null && !exe.isBlank();
+    }
+
+    /** 重新拉起更新器（保留原始启动参数）。 */
+    private boolean restartUpdater() {
+        try {
+            List<String> command = new ArrayList<>();
+            command.add(System.getenv("SPC_UPDATER_EXE"));
+            command.addAll(Arrays.asList(launchArgs));
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.directory(client.toFile());
+            builder.start();
+            return true;
+        } catch (Exception e) {
+            Ui.println("  " + Ui.red("重启失败：" + e.getMessage()));
+            return false;
+        }
+    }
     /** 当前 update.exe 的路径（由启动器通过 SPC_UPDATER_EXE 传入）。 */
     private Path currentExePath() {
         String fromEnv = System.getenv("SPC_UPDATER_EXE");
