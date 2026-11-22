@@ -31,15 +31,24 @@ public final class Ui {
 
     public static void init(boolean wantColor, boolean forceColor) {
         reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        if (!wantColor) {
+            color = false;
+            return;
+        }
+        // 显式 --color 优先于 NO_COLOR 与终端检测（重定向时也可强制上色）
+        if (forceColor) {
+            color = true;
+            return;
+        }
+        boolean launcherAnsi = "1".equals(System.getenv("SPC_UPDATER_ANSI"));
         boolean console = System.console() != null;
-        boolean ansi = forceColor
-                || "1".equals(System.getenv("SPC_UPDATER_ANSI"))
+        boolean ansi = launcherAnsi
                 || System.getenv("WT_SESSION") != null
                 || System.getenv("TERM_PROGRAM") != null
                 || System.getenv("ANSICON") != null
                 || System.getenv("TERM") != null;
         boolean noColorEnv = System.getenv("NO_COLOR") != null;
-        color = wantColor && !noColorEnv && ansi && (console || forceColor);
+        color = ansi && !noColorEnv && (console || launcherAnsi);
     }
 
     public static boolean colorEnabled() {
