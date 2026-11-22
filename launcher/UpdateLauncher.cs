@@ -152,27 +152,26 @@ internal static class UpdateLauncher
             }
             string exePath = Process.GetCurrentProcess().MainModule.FileName;
             string exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
+            bool consoleHidden = HideConsoleIfOwned();
             CleanupStaleUpdate(exeDir);
-            string client = FindClientRoot(exeDir);
             string java = EnsureEmbeddedRuntime();
             if (java == null)
             {
                 java = FindBundledJava(exeDir);
             }
-            if (java == null && client != null)
-            {
-                java = FindClientJava(client);
-            }
+
             if (java == null)
             {
                 java = FindSystemJava();
             }
             if (java == null)
             {
+                ShowConsoleIfHidden(consoleHidden);
                 Fail("内置运行时解压失败，系统里也没有可用的 Java 21+ 运行时。");
                 return 3;
             }
-            string workingDir = client != null ? client : exeDir;
+            ShowConsoleIfHidden(consoleHidden);
+            string workingDir = exeDir;
             string jar = ExtractJar();
             bool ansi = EnableAnsiOnConsole();
             ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -198,6 +197,11 @@ internal static class UpdateLauncher
 
     private static void Fail(string message)
     {
+        if (GetConsoleWindow() == IntPtr.Zero)
+        {
+            MessageBoxW(IntPtr.Zero, message, "SweetPotatoClient-Updater", 0x10);
+            return;
+        }
         Console.Error.WriteLine("[SweetPotatoClient-Updater] " + message);
         try
         {
@@ -286,6 +290,51 @@ internal static class UpdateLauncher
         catch (Exception)
         {
             return null;
+        }
+    }
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetConsoleWindow();
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetConsoleProcessList(uint[] processList, uint count);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int command);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+    private const int SwHide = 0;
+    private const int SwShow = 5;
+
+    /// <summary>双击启动（控制台只有自己）时先隐藏窗口，Java 检查通过后再显示。</summary>
+    private static bool HideConsoleIfOwned()
+    {
+        IntPtr window = GetConsoleWindow();
+        if (window == IntPtr.Zero)
+        {
+            return false;
+        }
+        uint[] processes = new uint[16];
+        uint count = GetConsoleProcessList(processes, (uint)processes.Length);
+        if (count > 1)
+        {
+            return false;
+        }
+        ShowWindow(window, SwHide);
+        return true;
+    }
+
+    private static void ShowConsoleIfHidden(bool hidden)
+    {
+        if (!hidden)
+        {
+            return;
+        }
+        IntPtr window = GetConsoleWindow();
+        if (window != IntPtr.Zero)
+        {
+            ShowWindow(window, SwShow);
         }
     }
     private static string FindBundledJava(string exeDir)
@@ -684,13 +733,14 @@ internal static class UpdateLauncher
 
     private static void CleanupStaleUpdate(string exeDir)
     {
-        TryDelete(Path.Combine(exeDir, "update.exe.new"));
-        TryDelete(Path.Combine(exeDir, "update.exe.old"));
+        string name = Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
+        TryDelete(Path.Combine(exeDir, name + ".new"));
+        TryDelete(Path.Combine(exeDir, name + ".old"));
     }
 
     private static void TryDelete(string path)
     {
-        for (int attempt = 0; attempt < 3; attempt++)
+        for (int attempt = 0; attempt < 15; attempt++)
         {
             try
             {
@@ -703,7 +753,7 @@ internal static class UpdateLauncher
             }
             catch (Exception)
             {
-                Thread.Sleep(200);
+                Thread.Sleep(300);
             }
         }
     }

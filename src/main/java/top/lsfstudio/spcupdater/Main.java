@@ -16,8 +16,9 @@ public final class Main {
     private static final int MAX_CHANGES_SHOWN = 15;
     private static final int MAX_RELEASE_BODY_LINES = 12;
 
-    private final Path client;
-    private final PclConfig pcl;
+    private Path client;
+    private PclConfig pcl;
+    private Path explicitClient;
     private final CountDownLatch cloudReady = new CountDownLatch(1);
     private final CountDownLatch fetchReady = new CountDownLatch(1);
     private volatile String fetchError = "";
@@ -28,7 +29,7 @@ public final class Main {
 
     private Main(Path client) {
         this.client = client;
-        this.pcl = new PclConfig(client);
+        this.pcl = client == null ? null : new PclConfig(client);
     }
 
     public static void main(String[] args) {
@@ -83,12 +84,198 @@ public final class Main {
             }
         }
         Ui.init(wantColor, forceColor);
-        Main app = new Main(resolveClient(clientArg));
+        Main app = new Main(null);
+        app.explicitClient = clientArg;
         app.autoMode = autoYes;
         if ("update".equals(command)) {
+            app.client = app.resolveClientPath();
+            app.pcl = new PclConfig(app.client);
             app.runCliUpdate();
         } else {
-            app.run();
+            app.startInteractive();
+        }
+    }
+
+    /** 启动流程：艺术字 → 检查客户端文件 → 解析路径 → 清屏进入主菜单。 */
+    private void startInteractive() {
+        Ui.clear();
+        Ui.banner();
+        Ui.println("  made by " + UpdaterInfo.AUTHOR);
+        Ui.println();
+        Ui.println("  正在检查客户端文件......");
+        client = resolveClientPath();
+        pcl = new PclConfig(client);
+        removeStaleOldExe();
+        Ui.clear();
+        run();
+    }
+
+    /**
+     * 解析客户端目录：
+     * A. 环境变量 SweetPotatoClient_PATH
+     * B. update.exe 同级目录是否为客户端（json / jar / .git）
+     * 都不满足时提示用户输入路径或 install（文件选择器 + git clone）。
+     */
+    private Path resolveClientPath() {
+        if (explicitClient != null) {
+            Path explicit = explicitClient.toAbsolutePath().normalize();
+            if (isClientDir(explicit)) {
+                return explicit;
+            }
+            Ui.println(Ui.red("  --client 指定的目录不是客户端：" + explicit));
+        }
+        String envPath = System.getenv("SweetPotatoClient_PATH");
+        if (envPath != null && !envPath.isBlank()) {
+            Path fromEnv = Path.of(envPath).toAbsolutePath().normalize();
+            if (isClientDir(fromEnv)) {
+                Ui.println("  使用环境变量 SweetPotatoClient_PATH：" + Ui.gray(fromEnv.toString()));
+                return fromEnv;
+            }
+            Ui.println(Ui.yellow("  环境变量 SweetPotatoClient_PATH 无效：" + fromEnv));
+        }
+        Path self = Launcher.selfExe();
+        Path[] candidates = { self == null ? null : self.getParent(), Path.of("").toAbsolutePath() };
+        for (Path candidate : candidates) {
+            if (candidate != null && isClientDir(candidate)) {
+                Path dir = candidate.toAbsolutePath().normalize();
+                Ui.println("  当前目录是客户端：" + Ui.gray(dir.toString()));
+                writeClientEnvVar(dir);
+                return dir;
+            }
+        }
+        while (true) {
+            String line = Ui.readLine("请输入客户端文件夹路径，或输入 install 进行全新安装");
+            if (line == null) {
+                System.exit(1);
+            }
+            String text = line.trim().replace("\"", "");
+            if (text.isEmpty()) {
+                continue;
+            }
+            if (text.equalsIgnoreCase("install")) {
+                Path installed = installClient();
+                if (installed != null) {
+                    return installed;
+                }
+                continue;
+            }
+            Path dir = Path.of(text).toAbsolutePath().normalize();
+            if (isClientDir(dir)) {
+                writeClientEnvVar(dir);
+                return dir;
+            }
+            Ui.println(Ui.red("  该路径不是 SweetPotatoClient 客户端，请重新输入。"));
+        }
+    }
+
+    /** 清理上一次自替换留下的 <exe>.old（可能当时还被占用）。 */
+    private static void removeStaleOldExe() {
+        Path self = Launcher.selfExe();
+        if (self == null) {
+            return;
+        }
+        Path old = self.resolveSibling(self.getFileName().toString() + ".old");
+        for (int attempt = 0; attempt < 10; attempt++) {
+            try {
+                if (!Files.exists(old)) {
+                    return;
+                }
+                Files.delete(old);
+                return;
+            } catch (Exception e) {
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+    private static boolean isClientDir(Path dir) {
+        if (dir == null || !Files.isDirectory(dir)) {
+            return false;
+        }
+        if (Files.isRegularFile(dir.resolve("SweetPotatoClient.json"))) {
+            return true;
+        }
+        if (Files.isDirectory(dir.resolve(".git"))) {
+            return true;
+        }
+        try (var stream = Files.list(dir)) {
+            return stream.anyMatch(path -> path.getFileName().toString().toLowerCase().endsWith(".jar"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void writeClientEnvVar(Path dir) {
+        try {
+            Process process = new ProcessBuilder("setx", "SweetPotatoClient_PATH", dir.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            Ui.println("  已写入环境变量 SweetPotatoClient_PATH。");
+        } catch (Exception e) {
+            Ui.println(Ui.yellow("  写入环境变量失败：" + e.getMessage()));
+        }
+    }
+
+    /** 输入 install：文件选择器选目录 → git clone → 写入环境变量。 */
+    private Path installClient() {
+        String chosen = pickFolder();
+        if (chosen == null || chosen.isBlank()) {
+            Ui.println("  已取消安装。");
+            return null;
+        }
+        Path dir = Path.of(chosen.trim());
+        try {
+            if (Files.exists(dir) && Files.list(dir).findAny().isPresent()) {
+                dir = dir.resolve("SweetPotatoClient");
+            }
+        } catch (Exception ignored) {
+            // 目录不可读时交给 git clone 报错
+        }
+        Ui.println("  正在克隆客户端到：" + Ui.gray(dir.toString()));
+        try {
+            Process process = new ProcessBuilder("git", "clone",
+                    "https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient.git",
+                    dir.toString())
+                    .inheritIO()
+                    .start();
+            if (process.waitFor() != 0) {
+                Ui.println(Ui.red("  克隆失败，请检查网络后重试。"));
+                return null;
+            }
+        } catch (Exception e) {
+            Ui.println(Ui.red("  克隆失败：" + e.getMessage()));
+            return null;
+        }
+        writeClientEnvVar(dir);
+        return dir;
+    }
+
+    private static String pickFolder() {
+        String script = String.join("\n",
+                "Add-Type -AssemblyName System.Windows.Forms",
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog",
+                "$f.Description = '选择 SweetPotatoClient 安装位置'",
+                "if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath }");
+        try {
+            Path scriptFile = Path.of(System.getProperty("java.io.tmpdir"),
+                    "spc-pick-folder-" + ProcessHandle.current().pid() + ".ps1");
+            Files.writeString(scriptFile, script);
+            ProcessBuilder builder = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
+                    "-STA", "-ExecutionPolicy", "Bypass", "-File", scriptFile.toString());
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
+            String output = new String(process.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8).trim();
+            process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            Files.deleteIfExists(scriptFile);
+            return output.isEmpty() ? null : output;
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -760,8 +947,11 @@ public final class Main {
 
     /** 自动流程结束后：优先拉起 pull 下来的 update.exe；若没有则把 .old 还原。 */
     private void launchCanonicalIfNeeded() {
-        Path canonical = client.resolve("update.exe");
-        Path old = canonical.resolveSibling("update.exe.old");
+        String selfEnv = Launcher.selfExeEnv();
+        Path canonical = selfEnv != null && !selfEnv.isBlank()
+                ? Path.of(selfEnv).toAbsolutePath()
+                : client.resolve("update.exe");
+        Path old = canonical.resolveSibling(canonical.getFileName().toString() + ".old");
         try {
             if (!Files.isRegularFile(canonical) && Files.isRegularFile(old)) {
                 Files.move(old, canonical);
