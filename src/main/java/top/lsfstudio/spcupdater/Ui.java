@@ -93,7 +93,9 @@ public final class Ui {
         OUT.println(text);
     }
 
+    /** 进入子界面：先清屏（连同回滚缓冲），再画标题。 */
     public static void title(String text) {
+        clear();
         OUT.println();
         OUT.println("  " + bold(text));
         OUT.println("  " + gray("-".repeat(Math.max(16, text.length()))));

@@ -303,7 +303,6 @@ public final class Main {
     // ------------------------------------------------------------ 1 更新客户端
 
     private boolean updateClient() {
-        Ui.clear();
         Ui.title("更新 SweetPotatoClient");
         Ui.println("  正在从上游获取最新信息...");
         Git.Result fetch = Git.run(client, "fetch", "--prune");
@@ -419,7 +418,6 @@ public final class Main {
 
     /** @return true 表示已启动热替换，需要退出当前进程 */
     private boolean updateUpdater() {
-        Ui.clear();
         Ui.title("更新 SweetPotatoClient-Updater");
         Ui.println("  当前版本：" + Ui.cyan(UpdaterInfo.VERSION));
         Ui.println("  正在查询最新 Release...");
@@ -616,7 +614,6 @@ public final class Main {
     // ------------------------------------------------------------ 3 +W / 4 -W
 
     private void unlockConfig() {
-        Ui.clear();
         Ui.title("+W 解锁配置文件");
         if (!pcl.exists()) {
             Ui.println("  " + Ui.red("未找到 PCL/config.v1.yml。"));
@@ -635,7 +632,6 @@ public final class Main {
     }
 
     private void relockConfig() {
-        Ui.clear();
         Ui.title("-W 回锁配置文件");
         if (!pcl.exists()) {
             boolean created = pcl.ensureFromTemplate();
