@@ -100,6 +100,16 @@ public final class Ui {
         OUT.println("  " + gray("-".repeat(Math.max(16, text.length()))));
     }
 
+    /** 读取输入；prompt 已经是带颜色的字符串，不再整体着色。 */
+    public static String readMarked(String prompt) {
+        OUT.print("  " + prompt + " ");
+        OUT.flush();
+        try {
+            return reader.readLine();
+        } catch (Exception e) {
+            return null;
+        }
+    }
     public static String readLine(String prompt) {
         OUT.print("  " + yellow(prompt) + " ");
         OUT.flush();

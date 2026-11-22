@@ -145,7 +145,9 @@ public final class Main {
             }
         }
         while (true) {
-            String line = Ui.readLine("请输入客户端文件夹路径，或输入 install 进行全新安装");
+            String prompt = "未检测到客户端实例，输入 " + Ui.cyan("path") + " 手动选择路径或输入 "
+                    + Ui.cyan("install") + " 进行全新安装：";
+            String line = Ui.readMarked(prompt);
             if (line == null) {
                 System.exit(1);
             }
@@ -154,12 +156,32 @@ public final class Main {
                 continue;
             }
             if (text.equalsIgnoreCase("install")) {
+                if (!ensureGitReadyForPicker()) {
+                    continue;
+                }
                 Path installed = installClient();
                 if (installed != null) {
                     return installed;
                 }
                 continue;
             }
+            if (text.equalsIgnoreCase("path")) {
+                if (!ensureGitReadyForPicker()) {
+                    continue;
+                }
+                String chosen = pickFolder("选择 SweetPotatoClient 路径");
+                if (chosen == null || chosen.isBlank()) {
+                    continue;
+                }
+                Path dir = Path.of(chosen.trim()).toAbsolutePath().normalize();
+                if (isClientDir(dir)) {
+                    writeClientEnvVar(dir);
+                    return dir;
+                }
+                Ui.println(Ui.red("  该路径不是 SweetPotatoClient 客户端，请重新选择。"));
+                continue;
+            }
+            // 兼容直接输入路径
             Path dir = Path.of(text).toAbsolutePath().normalize();
             if (isClientDir(dir)) {
                 writeClientEnvVar(dir);
@@ -193,6 +215,19 @@ public final class Main {
             }
         }
     }
+    /** path/install 回车后：打印 Git 状态，等待就绪后再唤起选择器。 */
+    private static boolean ensureGitReadyForPicker() {
+        Ui.println("  正在检查 Git 状态......");
+        if (!Git.ready()) {
+            Ui.println("  " + Ui.yellow("等待 Git 就绪..."));
+            if (!Git.awaitReady(180_000L)) {
+                Ui.println(Ui.red("  Git 未就绪，无法继续。"));
+                return false;
+            }
+        }
+        Ui.println("  " + Ui.green("Git 已就绪"));
+        return true;
+    }
     private static boolean isClientDir(Path dir) {
         if (dir == null || !Files.isDirectory(dir)) {
             return false;
@@ -224,7 +259,7 @@ public final class Main {
 
     /** 输入 install：文件选择器选目录 → git clone → 写入环境变量。 */
     private Path installClient() {
-        String chosen = pickFolder();
+        String chosen = pickFolder("选择 SweetPotatoClient 全新安装位置");
         if (chosen == null || chosen.isBlank()) {
             Ui.println("  已取消安装。");
             return null;
@@ -263,15 +298,16 @@ public final class Main {
         return dir;
     }
 
-    private static String pickFolder() {
-        String preset = System.getenv("SPC_INSTALL_DIR");
+    private static String pickFolder(String title) {
+        String preset = System.getenv("SPC_PICK_DIR");
         if (preset != null && !preset.isBlank()) {
             return preset;
         }
+        String safeTitle = title == null ? "" : title.replace("'", "''");
         String script = String.join("\n",
                 "Add-Type -AssemblyName System.Windows.Forms",
                 "$f = New-Object System.Windows.Forms.FolderBrowserDialog",
-                "$f.Description = '选择 SweetPotatoClient 安装位置'",
+                "$f.Description = '" + safeTitle + "'",
                 "if ($f.ShowDialog() -eq 'OK') {",
                 "  [IO.File]::WriteAllText($args[0], $f.SelectedPath, (New-Object Text.UTF8Encoding $false))",
                 "}");
@@ -556,7 +592,7 @@ public final class Main {
         Ui.println();
         boolean newer = hasNewerUpdater();
         String gitState = Git.ready()
-                ? Ui.green("（Git已就绪 路径：" + Git.displayPath() + "）")
+                ? Ui.green("（Git已就绪）")
                 : Ui.yellow("（等待Git就绪...）");
         Ui.println("  更新器版本：" + Ui.cyan(UpdaterInfo.VERSION) + " " + gitState);
         Ui.println("  云端版本：" + (newer ? Ui.yellow(cloudVersionText() + "（有新版本）") : Ui.gray(cloudVersionText())));
