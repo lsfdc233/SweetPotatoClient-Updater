@@ -120,29 +120,47 @@ public final class Main {
     private Path resolveClientPath() {
         if (explicitClient != null) {
             Path explicit = explicitClient.toAbsolutePath().normalize();
-            if (isClientDir(explicit)) {
+            if (isUsableClient(explicit) || isClientDir(explicit)) {
                 return explicit;
             }
             Ui.println(Ui.red("  --client 指定的目录不是客户端：" + explicit));
         }
+        Path envClient = null;
         String envPath = System.getenv("SweetPotatoClient_PATH");
         if (envPath != null && !envPath.isBlank()) {
             Path fromEnv = Path.of(envPath).toAbsolutePath().normalize();
-            if (isClientDir(fromEnv)) {
-                Ui.println("  使用环境变量 SweetPotatoClient_PATH：" + Ui.gray(fromEnv.toString()));
-                return fromEnv;
+            if (Files.isDirectory(fromEnv) && isUsableClient(fromEnv)) {
+                envClient = fromEnv;
+            } else {
+                Ui.println(Ui.yellow("  环境变量 SweetPotatoClient_PATH 无效或不是有效的客户端仓库：" + fromEnv));
             }
-            Ui.println(Ui.yellow("  环境变量 SweetPotatoClient_PATH 无效：" + fromEnv));
         }
         Path self = Launcher.selfExe();
         Path[] candidates = { self == null ? null : self.getParent(), Path.of("").toAbsolutePath() };
+        Path localClient = null;
         for (Path candidate : candidates) {
             if (candidate != null && isClientDir(candidate)) {
-                Path dir = candidate.toAbsolutePath().normalize();
-                Ui.println("  当前目录是客户端：" + Ui.gray(dir.toString()));
-                writeClientEnvVar(dir);
-                return dir;
+                localClient = candidate.toAbsolutePath().normalize();
+                break;
             }
+        }
+        if (localClient != null) {
+            if (envClient != null && !isSameDirectory(envClient, localClient)) {
+                Ui.println(Ui.yellow("  环境变量路径与 update.exe 所在客户端不一致，改用 update.exe 所在目录。"));
+                Ui.println(Ui.gray("    环境变量：" + envClient));
+                Ui.println(Ui.gray("    实际使用：" + localClient));
+                writeClientEnvVar(localClient);
+            } else if (envClient == null) {
+                Ui.println("  当前目录是客户端：" + Ui.gray(localClient.toString()));
+                writeClientEnvVar(localClient);
+            } else {
+                Ui.println("  使用环境变量 SweetPotatoClient_PATH：" + Ui.gray(localClient.toString()));
+            }
+            return localClient;
+        }
+        if (envClient != null) {
+            Ui.println("  使用环境变量 SweetPotatoClient_PATH：" + Ui.gray(envClient.toString()));
+            return envClient;
         }
         while (true) {
             String prompt = "未检测到客户端实例，输入 " + Ui.cyan("path") + " 手动选择路径或输入 "
@@ -227,6 +245,38 @@ public final class Main {
         }
         Ui.println("  " + Ui.green("Git 已就绪"));
         return true;
+    }
+    /** 严格校验：是 git 仓库、根目录一致、origin 指向 SweetPotatoClient（不是 Updater）。 */
+    private static boolean isUsableClient(Path dir) {
+        try {
+            if (!Files.isDirectory(dir) || !Files.isDirectory(dir.resolve(".git"))) {
+                return false;
+            }
+            Git.Result top = Git.run(dir, "rev-parse", "--show-toplevel");
+            if (!top.ok() || top.first().isBlank()) {
+                return false;
+            }
+            Path topPath = Path.of(top.first().trim()).toAbsolutePath().normalize();
+            if (!isSameDirectory(topPath, dir)) {
+                return false;
+            }
+            Git.Result remote = Git.run(dir, "remote", "get-url", "origin");
+            if (!remote.ok()) {
+                return false;
+            }
+            String url = remote.first().toLowerCase(java.util.Locale.ROOT);
+            return url.contains("sweetpotatoclient") && !url.contains("updater");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isSameDirectory(Path a, Path b) {
+        try {
+            return Files.isSameFile(a, b);
+        } catch (Exception e) {
+            return a.toAbsolutePath().normalize().equals(b.toAbsolutePath().normalize());
+        }
     }
     private static boolean isClientDir(Path dir) {
         if (dir == null || !Files.isDirectory(dir)) {
