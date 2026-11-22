@@ -8,7 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** git 命令封装。所有输出按 UTF-8 读取（git 输出即 UTF-8）。 */
 public final class Git {
@@ -50,6 +52,47 @@ public final class Git {
                 }
             }
             return new Result(process.waitFor(), lines);
+        } catch (IOException e) {
+            return new Result(127, List.of("无法执行 git：" + e.getMessage()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new Result(130, List.of("git 被中断"));
+        }
+    }
+
+    /** 带超时的运行：超时后强制结束进程，避免网络卡住界面。 */
+    public static Result runTimed(Path dir, long timeoutSeconds, String... args) {
+        List<String> command = new ArrayList<>();
+        command.add("git");
+        command.addAll(Arrays.asList(args));
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(dir.toFile());
+        builder.redirectErrorStream(true);
+        builder.environment().put("GIT_TERMINAL_PROMPT", "0");
+        builder.environment().put("GIT_PAGER", "cat");
+        try {
+            Process process = builder.start();
+            List<String> lines = Collections.synchronizedList(new ArrayList<>());
+            Thread reader = new Thread(() -> {
+                try (BufferedReader readerStream = new BufferedReader(
+                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = readerStream.readLine()) != null) {
+                        lines.add(line);
+                    }
+                } catch (IOException ignored) {
+                    // 进程被结束时正常
+                }
+            }, "git-output-reader");
+            reader.setDaemon(true);
+            reader.start();
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+                return new Result(124, List.of("git 超时（" + timeoutSeconds + " 秒）"));
+            }
+            reader.join(2000);
+            return new Result(process.exitValue(), new ArrayList<>(lines));
         } catch (IOException e) {
             return new Result(127, List.of("无法执行 git：" + e.getMessage()));
         } catch (InterruptedException e) {

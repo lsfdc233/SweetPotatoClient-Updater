@@ -22,6 +22,8 @@ public final class Main {
     private final Path client;
     private final PclConfig pcl;
     private final CountDownLatch cloudReady = new CountDownLatch(1);
+    private final CountDownLatch fetchReady = new CountDownLatch(1);
+    private volatile String fetchError = "";
 
     private volatile ReleaseClient.Release latestRelease;
     private volatile String latestReleaseError = "";
@@ -186,7 +188,9 @@ public final class Main {
             return;
         }
         startCloudCheck();
+        startGitFetch();
         awaitCloudCheck(Duration.ofSeconds(6));
+        awaitFetchReady(Duration.ofSeconds(3));
         while (true) {
             drawMenu();
             String choice = Ui.readLine("请选择 [1-5]");
@@ -232,6 +236,30 @@ public final class Main {
         thread.start();
     }
 
+    /** 后台刷新上游引用，避免主菜单显示过期的 origin/main。 */
+    private void startGitFetch() {
+        Thread thread = new Thread(() -> {
+            try {
+                Git.Result result = Git.runTimed(client, 8, "fetch", "--prune");
+                if (!result.ok()) {
+                    fetchError = result.first().isBlank() ? "刷新失败" : result.first();
+                }
+            } finally {
+                fetchReady.countDown();
+            }
+        }, "spc-git-fetch");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void awaitFetchReady(Duration timeout) {
+        try {
+            fetchReady.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /** 首屏绘制前最多等一会儿云端版本，避免一直显示「查询中...」。 */
     private void awaitCloudCheck(Duration timeout) {
         try {
@@ -275,7 +303,8 @@ public final class Main {
         String upstream = Git.upstream(client);
         int[] aheadBehind = Git.aheadBehind(client, upstream);
         Ui.println("  本地提交：" + Git.shortHash(client, "HEAD") + "  " + Ui.gray(Git.subject(client, "HEAD")));
-        Ui.println("  上游提交：" + Git.shortHash(client, upstream) + "  " + Ui.gray(upstream));
+        String fetchNote = fetchError.isEmpty() ? "" : "（刷新失败，显示缓存）";
+        Ui.println("  上游提交：" + Git.shortHash(client, upstream) + "  " + Ui.gray(upstream + fetchNote));
         String state;
         if (aheadBehind[1] > 0) {
             state = Ui.yellow("落后上游 " + aheadBehind[1] + " 个提交");
