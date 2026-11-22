@@ -1,14 +1,32 @@
 package top.lsfstudio.spcupdater;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
 /** 更新器自身的版本与项目地址。 */
 public final class UpdaterInfo {
-    /** 版本格式：v主.次.修订-构建号 */
-    public static final String VERSION = "v0.0.1-00001";
+    /** 版本格式：v主.次.修订-构建号；运行时读取构建时写入的 version.txt。 */
+    public static final String VERSION = loadVersion();
     public static final String AUTHOR = "lsfdc";
     public static final String UPDATER_REPO = "https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient-Updater.git";
     public static final String CLIENT_REPO = "https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient.git";
 
     private UpdaterInfo() {
+    }
+
+    private static String loadVersion() {
+        try (InputStream input = UpdaterInfo.class.getResourceAsStream("/version.txt")) {
+            if (input != null) {
+                String text = new String(input.readAllBytes(), StandardCharsets.UTF_8).trim();
+                if (!text.isEmpty()) {
+                    return text;
+                }
+            }
+        } catch (IOException ignored) {
+            // 退回开发版本
+        }
+        return "v0.0.3-00037";
     }
 
     /**

@@ -2,7 +2,7 @@
 
 SweetPotatoClient 整合包的更新器 / 配置锁工具（Java 控制台 TUI）。
 
-- 更新器版本：`v0.0.1-00001`
+- 更新器版本：见仓库根目录 `VERSION` 文件
 - 更新器仓库：<https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient-Updater.git>
 - 客户端仓库：<https://git.lsfstudio.top:21619/LiSFeDCo/SweetPotatoClient.git>
 
@@ -35,8 +35,9 @@ gradlew.bat --no-daemon build
 产物：
 
 ```
-SweetPotatoClient\update.exe      <- 直接生成到客户端根目录（单文件，约 30 KB）
-SweetPotatoClient-Updater\build\libs\SweetPotatoClient-Updater-v0.0.1-00001.jar
+SweetPotatoClient\update.exe                          <- 直接生成到客户端根目录（单文件，约 30 KB）
+SweetPotatoClient-Updater\dist\update-<版本号>.exe    <- 带版本号的 Release 副本（如 update-v0.0.3-00038.exe）
+SweetPotatoClient-Updater\build\libs\SweetPotatoClient-Updater-<版本号>.jar
 ```
 
 > `update.exe` 是单文件启动器：内置了 `update.jar`，运行时自动使用客户端自带的 JDK
@@ -64,7 +65,14 @@ update.exe --version              :: 显示版本
 - 直接 `java -jar update.jar` 运行时，只有 Windows Terminal 等原生支持 ANSI 的终端才会彩色；
 - 设置环境变量 `NO_COLOR=1` 可强制关闭彩色。
 
-版本格式：`v主.次.修订-构建号`，例如 `v0.0.1-00001`。
+## 版本号
+
+版本格式：`v主.次.修订-构建号`，例如 `v0.0.3-00038`。
+
+- 唯一来源是仓库根目录的 **`VERSION`** 文件；构建脚本和运行时（jar 内 `version.txt`）都读它，不会出现两处不一致；
+- 构建号递增：`gradlew.bat bumpVersion`（例：`v0.0.3-00037` → `v0.0.3-00038`）；
+- 要手改版本：直接编辑 `VERSION` 文件后重新构建；
+- `update.exe --version` 和主菜单里的「更新器版本」都显示该值。
 
 ## 目录
 
