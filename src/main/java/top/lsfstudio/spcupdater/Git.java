@@ -206,6 +206,29 @@ public final class Git {
         return result.lines().stream().filter(line -> !line.isBlank()).toList();
     }
 
+    /**
+     * 判断某个「上游会改到的文件」是否和本地有冲突（本地会丢东西）。
+     * - 已跟踪：git status 有改动即冲突；
+     * - 未跟踪（含被 .gitignore 忽略）：比较本地内容与上游内容，不同才算冲突；
+     * - 上游没有该文件（删除）或本地不存在：不算冲突。
+     */
+    public static boolean conflictsWithUpdate(Path dir, String upstream, String relativePath) {
+        boolean tracked = run(dir, "ls-files", "--error-unmatch", "--", relativePath).ok();
+        if (tracked) {
+            Result status = run(dir, "status", "--porcelain", "--", relativePath);
+            return status.ok() && status.lines().stream().anyMatch(line -> !line.isBlank());
+        }
+        Path local = dir.resolve(relativePath);
+        if (!Files.exists(local)) {
+            return false;
+        }
+        Result upstreamBlob = run(dir, "rev-parse", upstream + ":" + relativePath);
+        if (!upstreamBlob.ok() || upstreamBlob.first().isBlank()) {
+            return false;
+        }
+        Result localBlob = run(dir, "hash-object", "--", relativePath);
+        return !localBlob.ok() || !localBlob.first().equalsIgnoreCase(upstreamBlob.first());
+    }
     /** 丢弃某个文件的本地改动：已跟踪的还原到 HEAD，未跟踪的删除。 */
     public static boolean prepareForPull(Path dir, String relativePath) {
         boolean tracked = run(dir, "ls-files", "--error-unmatch", "--", relativePath).ok();

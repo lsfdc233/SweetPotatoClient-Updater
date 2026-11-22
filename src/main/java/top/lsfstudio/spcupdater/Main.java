@@ -388,8 +388,7 @@ public final class Main {
         List<String> incoming = Git.incomingPaths(client, upstream);
         List<String> conflicts = new ArrayList<>();
         for (String path : incoming) {
-            Git.Result status = Git.run(client, "status", "--porcelain", "--", path);
-            if (status.ok() && status.lines().stream().anyMatch(line -> !line.isBlank())) {
+            if (Git.conflictsWithUpdate(client, upstream, path)) {
                 conflicts.add(path);
             }
         }
