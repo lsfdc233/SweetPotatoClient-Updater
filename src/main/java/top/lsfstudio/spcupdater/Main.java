@@ -188,6 +188,7 @@ public final class Main {
             Ui.pause("按 Enter 退出...");
             return;
         }
+        Git.ensureIdentity(client);
         startCloudCheck();
         startGitFetch();
         awaitCloudCheck(Duration.ofSeconds(6));
@@ -418,7 +419,7 @@ public final class Main {
         }
 
         pcl.unlock();
-        Git.Result pull = Git.run(client, "pull");
+        Git.Result pull = Git.run(client, "-c", "pull.rebase=false", "pull", "--no-rebase", "--no-edit");
         if (!pull.ok()) {
             Ui.println();
             Ui.println("  " + Ui.yellow("git pull 失败，尝试清理冲突文件后重试..."));
@@ -433,7 +434,7 @@ public final class Main {
                 boolean ok = Git.prepareForPull(client, path);
                 Ui.println("    " + (ok ? Ui.gray("已丢弃本地改动：" + path) : Ui.red("无法处理：" + path)));
             }
-            pull = Git.run(client, "pull");
+            pull = Git.run(client, "-c", "pull.rebase=false", "pull", "--no-rebase", "--no-edit");
         }
         if (!pull.ok()) {
             showOutput(pull, "更新失败，请手动处理：");

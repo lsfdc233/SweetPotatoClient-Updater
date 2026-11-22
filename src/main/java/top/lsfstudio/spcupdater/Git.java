@@ -41,6 +41,7 @@ public final class Git {
         builder.redirectErrorStream(true);
         builder.environment().put("GIT_TERMINAL_PROMPT", "0");
         builder.environment().put("GIT_PAGER", "cat");
+        applyIdentity(builder);
         try {
             Process process = builder.start();
             List<String> lines = new ArrayList<>();
@@ -70,6 +71,7 @@ public final class Git {
         builder.redirectErrorStream(true);
         builder.environment().put("GIT_TERMINAL_PROMPT", "0");
         builder.environment().put("GIT_PAGER", "cat");
+        applyIdentity(builder);
         try {
             Process process = builder.start();
             List<String> lines = Collections.synchronizedList(new ArrayList<>());
@@ -168,6 +170,35 @@ public final class Git {
         return out;
     }
 
+    private static volatile String identityNameOverride;
+    private static volatile String identityEmailOverride;
+
+    /**
+     * 用户没有配置 git 身份时，用内置身份兜底（Player / no-reply@lsfstudio.top），
+     * 避免 git pull 需要合并时报 "Committer identity unknown"。
+     */
+    public static void ensureIdentity(Path dir) {
+        try {
+            String name = run(dir, "config", "--get", "user.name").first();
+            String email = run(dir, "config", "--get", "user.email").first();
+            identityNameOverride = name.isBlank() ? "Player" : null;
+            identityEmailOverride = email.isBlank() ? "no-reply@lsfstudio.top" : null;
+        } catch (Exception e) {
+            identityNameOverride = "Player";
+            identityEmailOverride = "no-reply@lsfstudio.top";
+        }
+    }
+
+    private static void applyIdentity(ProcessBuilder builder) {
+        if (identityNameOverride != null) {
+            builder.environment().put("GIT_AUTHOR_NAME", identityNameOverride);
+            builder.environment().put("GIT_COMMITTER_NAME", identityNameOverride);
+        }
+        if (identityEmailOverride != null) {
+            builder.environment().put("GIT_AUTHOR_EMAIL", identityEmailOverride);
+            builder.environment().put("GIT_COMMITTER_EMAIL", identityEmailOverride);
+        }
+    }
     public record FileChange(String type, String path, String oldPath) {
     }
 
