@@ -20,7 +20,7 @@ SweetPotatoClient 整合包的更新器 / 配置锁工具（Java 控制台 TUI�
 
 ## 构建
 
-需要 **JDK 21+**（要带 `jpackage`，例如 Oracle/Temurin JDK 21）。
+需要 **JDK 21+**（Gradle 用来编译）。单文件 exe 由 .NET Framework 自带的 `csc` 生成（Windows 10/11 默认就有）。
 
 ```bat
 build.bat
@@ -29,22 +29,25 @@ build.bat
 或手动：
 
 ```bat
-gradlew.bat --no-daemon build packageExe
+gradlew.bat --no-daemon build
 ```
 
 产物：
 
 ```
-dist/update/update.exe           <- 双击运行（控制台程序）
-dist/update/runtime/             <- 内置精简运行时，需与 update.exe 放在一起
+SweetPotatoClient\update.exe      <- 直接生成到客户端根目录（单文件，约 30 KB）
+SweetPotatoClient-Updater\build\libs\SweetPotatoClient-Updater-v0.0.1-00001.jar
 ```
 
-> 说明：`update.exe` 用 `jpackage --type app-image --win-console` 生成，不是单文件 exe；
-> 分发时请把整个 `dist/update/` 目录一起打包。
+> `update.exe` 是单文件启动器：内置了 `update.jar`，运行时自动使用客户端自带的 JDK
+> （`jdk-*/bin/java.exe`），不需要额外的 `runtime/` 目录。
+> 每次 `gradlew build` / `build.bat` 都会把新的 `update.exe` 输出到 `SweetPotatoClient` 根目录。
+
+可选：需要自带运行时的 app-image 时执行 `gradlew packageExe`，输出到 `dist/update/update.exe`。
 
 ## 运行
 
-把 `update.exe` 放到 `SweetPotatoClient` 根目录（或任意位置用参数指定）：
+把 `update.exe` 放到 `SweetPotatoClient` 根目录即可双击运行；
 
 ```bat
 update.exe                        :: 自动向上查找 SweetPotatoClient 仓库
@@ -64,4 +67,6 @@ src/main/java/top/lsfstudio/spcupdater/
   Git.java         git 命令封装
   PclConfig.java   PCL 配置只读锁 + Java 路径修复
   UpdaterInfo.java 版本与仓库地址
+launcher/
+  UpdateLauncher.cs 单文件 exe 启动器（内嵌 jar，调用客户端 JDK）
 ```
